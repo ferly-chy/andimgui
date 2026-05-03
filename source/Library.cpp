@@ -13,75 +13,90 @@
 #include <chrono>
 #include <thread>
 
-void main_thread()
-{
-	CrashHandler::Install();
+void main_thread() {
+  CrashHandler::Install();
 
-	KT::Init();
+  KT::Init();
 
-	if (!Elf.scanAsync({
-			// "libc.so",
-			// "libUE4.so", // For Unreal Engine 4
-			// "libvulkan.so",
-			"libinput.so", // For InputEventHook
-			"libart.so", // For GetJavaVM()
-			// "libandroid_runtime.so",
-		}))
-	{
-		LOGE("Failed to scan necessary libraries.");
-		MAKE_CRASH();
-	}
+  if (!Elf.scanAsync({
+          // "libc.so",
+          // "libUE4.so", // For Unreal Engine 4
+          "libunity.so",  // For Unity
+          "libil2cpp.so", // For Unity
+          "libvulkan.so",
+          "libinput.so", // For InputEventHook
+          "libart.so",   // For GetJavaVM()
+                         //"libandroid_runtime.so",
+      })) {
+    LOGE("Failed to scan necessary libraries.");
+    // MAKE_CRASH(); // disable this for heavy games.. late library loaded
+  }
 
-	GetLogFile("Debug")->Append("Hello\n");
+  GetLogFile("Debug")->Append("Hello\n");
 
-	SwapChainHook::SetRenderCallback([]() { ImGui::ShowDemoWindow(); });
-	SwapChainHook::Install();
+  // render imgui here..
+  SwapChainHook::SetRenderCallback([]() {
+    ImGui::Begin("Unity Mod Menu");
+    ImGui::Text("Unity/IL2CPP Mod Loaded!");
+    ImGui::Separator();
 
-	InputEventHook::Initialize([](AInputEvent* event)
-	{
-        if (event)
-        {
-            if (SwapChainHook::IsInitialized())
-            {
-				const ImVec2 size = { (float)SwapChainHook::GetWidth(), (float)SwapChainHook::GetHeight() };
-                CustomHandleInput::ImGui_ImplAndroid_HandleInputEvent(event, size);
-            }
+    static bool godMode = false;
+    if (ImGui::Checkbox("God Mode", &godMode)) {
+      LOGI("God Mode: %s", godMode ? "ON" : "OFF");
+    }
 
-            int32_t event_type = AInputEvent_getType(event);
-            if (event_type == AINPUT_EVENT_TYPE_KEY)
-            {
-                int32_t event_key_code = AKeyEvent_getKeyCode(event);
-                int32_t event_action = AKeyEvent_getAction(event);
-                if (event_key_code == AKEYCODE_VOLUME_DOWN && event_action == AKEY_EVENT_ACTION_DOWN)
-                {
-                    LOGI("keycode: AKEYCODE_VOLUME_DOWN, action: AKEY_EVENT_ACTION_DOWN");
-                }
-                else if (event_key_code == AKEYCODE_VOLUME_UP && event_action == AKEY_EVENT_ACTION_DOWN)
-                {
-                    LOGI("keycode: AKEYCODE_VOLUME_UP, action: AKEY_EVENT_ACTION_DOWN");
-                }
-            }
+    static bool demo = false;
+    ImGui::Checkbox("demo", &demo);
+    if (demo) {
+      ImGui::ShowDemoWindow(&demo);
+    }
+
+    ImGui::End();
+    // ImGui::ShowDemoWindow();
+  });
+
+  // hook
+  SwapChainHook::Install();
+
+  InputEventHook::Initialize([](AInputEvent *event) {
+    if (event) {
+      if (SwapChainHook::IsInitialized()) {
+        const ImVec2 size = {(float)SwapChainHook::GetWidth(),
+                             (float)SwapChainHook::GetHeight()};
+        CustomHandleInput::ImGui_ImplAndroid_HandleInputEvent(event, size);
+      }
+
+      int32_t event_type = AInputEvent_getType(event);
+      if (event_type == AINPUT_EVENT_TYPE_KEY) {
+        int32_t event_key_code = AKeyEvent_getKeyCode(event);
+        int32_t event_action = AKeyEvent_getAction(event);
+        if (event_key_code == AKEYCODE_VOLUME_DOWN &&
+            event_action == AKEY_EVENT_ACTION_DOWN) {
+          LOGI("keycode: AKEYCODE_VOLUME_DOWN, action: AKEY_EVENT_ACTION_DOWN");
+        } else if (event_key_code == AKEYCODE_VOLUME_UP &&
+                   event_action == AKEY_EVENT_ACTION_DOWN) {
+          LOGI("keycode: AKEYCODE_VOLUME_UP, action: AKEY_EVENT_ACTION_DOWN");
         }
-    });
+      }
+    }
+  });
 }
 
 static std::atomic<bool> g_Initialized{false};
 
-extern "C" jint JNIEXPORT JNI_OnLoad(JavaVM* vm, void* reserved)
-{
-	LOGI("JNI_OnLoad called (Manual or Injector).");
+extern "C" jint JNIEXPORT JNI_OnLoad(JavaVM *vm, void *reserved) {
+  LOGI("JNI_OnLoad called (Manual or Injector).");
 
-	// Inisialisasi thread utama jika belum pernah dijalankan
-	if (!g_Initialized.exchange(true)) {
-		std::thread(main_thread).detach();
-	}
+  // Inisialisasi thread utama jika belum pernah dijalankan
+  if (!g_Initialized.exchange(true)) {
+    std::thread(main_thread).detach();
+  }
 
-	return JNI_VERSION_1_6;
+  return JNI_VERSION_1_6;
 }
 
-__attribute__((constructor)) void ctor()
-{
-	LOGI("Library constructor called.");
+__attribute__((constructor)) void ctor() {
+  LOGI("Library constructor called.");
 }
 
 __attribute__((destructor)) void dtor() { LOGI("dtor"); }

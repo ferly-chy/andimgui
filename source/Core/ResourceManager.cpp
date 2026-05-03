@@ -20,6 +20,8 @@ std::string ResourceManager::findSystemChineseFont() {
 
     const std::vector<std::string> chineseFonts = {
         "MiSansVF.ttf",
+	"SourceSansPro-Bold.ttf",
+	"DroidSansMono.ttf",
         "SysSans-Hans-Regular.ttf",
         "ZUKChinese.ttf"
     };
