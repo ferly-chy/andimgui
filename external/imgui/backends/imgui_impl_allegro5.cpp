@@ -9,6 +9,7 @@
 //  [X] Platform: Mouse cursor shape and visibility (ImGuiBackendFlags_HasMouseCursors). Disable with 'io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange'.
 // Missing features or Issues:
 //  [ ] Renderer: The renderer is suboptimal as we need to unindex our buffers and convert vertices manually.
+//  [ ] Renderer: Missing support for DrawCallback_SetSamplerLinear, DrawCallback_SetSamplerNearest callbacks: Allegro5 cannot enable/disable LINEAR bitmap flags after creation.
 //  [ ] Platform: Missing gamepad support.
 
 // You can use unmodified imgui_impl_* files in your project. See examples/ folder for examples of using this.
@@ -21,6 +22,8 @@
 
 // CHANGELOG
 // (minor and older changes stripped away, please see git history for details)
+//  2026-04-23: Added support for standard draw callbacks (in platform_io): DrawCallback_ResetRenderState (others cannot be supported by Allegro5). (#9378)
+//  2025-09-18: Call platform_io.ClearRendererHandlers() and platform_io.ClearPlatformHandlers() on shutdown.
 //  2025-08-12: Inputs: fixed missing support for ImGuiKey_PrintScreen under Windows, as raw Allegro 5 does not receive it.
 //  2025-08-12: Added ImGui_ImplAllegro5_SetDisplay() function to change current ALLEGRO_DISPLAY, as Allegro applications often need to do that.
 //  2025-07-07: Fixed texture update broken on some platforms where ALLEGRO_LOCK_WRITEONLY needed all texels to be rewritten.
@@ -135,7 +138,10 @@ static void ImGui_ImplAllegro5_SetupRenderState(ImDrawData* draw_data)
     }
 }
 
-// Render function.
+// Draw callbacks
+static void ImGui_ImplAllegro5_DrawCallback_ResetRenderState(const ImDrawList*, const ImDrawCmd*) {} // Intentionally empty. Used as an identifier for rendering loop to call its code. Simpler to implement this way.
+
+// Render function
 void ImGui_ImplAllegro5_RenderDrawData(ImDrawData* draw_data)
 {
     // Avoid rendering when minimized
@@ -151,6 +157,7 @@ void ImGui_ImplAllegro5_RenderDrawData(ImDrawData* draw_data)
 
     // Backup Allegro state that will be modified
     ImGui_ImplAllegro5_Data* bd = ImGui_ImplAllegro5_GetBackendData();
+    ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
     ALLEGRO_TRANSFORM last_transform = *al_get_current_transform();
     ALLEGRO_TRANSFORM last_projection_transform = *al_get_current_projection_transform();
     int last_clip_x, last_clip_y, last_clip_w, last_clip_h;
@@ -207,8 +214,7 @@ void ImGui_ImplAllegro5_RenderDrawData(ImDrawData* draw_data)
             if (pcmd->UserCallback)
             {
                 // User callback, registered via ImDrawList::AddCallback()
-                // (ImDrawCallback_ResetRenderState is a special callback value used by the user to request the renderer to reset render state.)
-                if (pcmd->UserCallback == ImDrawCallback_ResetRenderState)
+                if (pcmd->UserCallback == ImGui_ImplAllegro5_DrawCallback_ResetRenderState)
                     ImGui_ImplAllegro5_SetupRenderState(draw_data);
                 else
                     pcmd->UserCallback(draw_list, pcmd);
@@ -485,11 +491,12 @@ bool ImGui_ImplAllegro5_Init(ALLEGRO_DISPLAY* display)
 
     ImGui_ImplAllegro5_SetDisplay(display);
 
-#if ALLEGRO_HAS_CLIPBOARD
     ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
+#if ALLEGRO_HAS_CLIPBOARD
     platform_io.Platform_SetClipboardTextFn = ImGui_ImplAllegro5_SetClipboardText;
     platform_io.Platform_GetClipboardTextFn = ImGui_ImplAllegro5_GetClipboardText;
 #endif
+    platform_io.DrawCallback_ResetRenderState = ImGui_ImplAllegro5_DrawCallback_ResetRenderState;
 
     return true;
 }
@@ -499,6 +506,7 @@ void ImGui_ImplAllegro5_Shutdown()
     ImGui_ImplAllegro5_Data* bd = ImGui_ImplAllegro5_GetBackendData();
     IM_ASSERT(bd != nullptr && "No platform backend to shutdown, or already shutdown?");
     ImGuiIO& io = ImGui::GetIO();
+    ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
 
     ImGui_ImplAllegro5_InvalidateDeviceObjects();
     if (bd->VertexDecl)
@@ -509,6 +517,8 @@ void ImGui_ImplAllegro5_Shutdown()
     io.BackendPlatformName = io.BackendRendererName = nullptr;
     io.BackendPlatformUserData = nullptr;
     io.BackendFlags &= ~(ImGuiBackendFlags_HasMouseCursors | ImGuiBackendFlags_RendererHasTextures);
+    platform_io.ClearRendererHandlers();
+    platform_io.ClearPlatformHandlers();
     IM_DELETE(bd);
 }
 
@@ -520,7 +530,7 @@ void ImGui_ImplAllegro5_SetDisplay(ALLEGRO_DISPLAY* display)
     if (bd->VertexDecl)
     {
         al_destroy_vertex_decl(bd->VertexDecl);
-        bd->VertexDecl = NULL;
+        bd->VertexDecl = nullptr;
     }
 
     if (bd->Display && !bd->VertexDecl)

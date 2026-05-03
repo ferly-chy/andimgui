@@ -74,7 +74,7 @@ bool ElfScannerManager::scanAsync(const std::set<std::string>& libraries) {
         }
 
         m_scanners[idx] = std::move(scanner);
-        LOGI("[ElfScannerManager] %s base: 0x%llX", name.c_str(), m_scanners[idx].base());
+        LOGI("[ElfScannerManager] %s base: 0x%lX", name.c_str(), (unsigned long)m_scanners[idx].base());
     }
 
     auto end = std::chrono::high_resolution_clock::now();

@@ -723,10 +723,10 @@ static bool InitImGuiVulkan()
     initInfo.QueueFamily     = g_VkQueueFamily;
     initInfo.Queue           = g_VkQueue;
     initInfo.DescriptorPool  = g_VkDescriptorPool;
-    initInfo.RenderPass      = g_VkRenderPass;
+    initInfo.PipelineInfoMain.RenderPass = g_VkRenderPass;
     initInfo.MinImageCount   = (uint32_t)g_VkSwapImages.size();
     initInfo.ImageCount      = (uint32_t)g_VkSwapImages.size();
-    initInfo.MSAASamples     = VK_SAMPLE_COUNT_1_BIT;
+    initInfo.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
     initInfo.CheckVkResultFn = [](VkResult r) {
         if (r != VK_SUCCESS) LOGE("[SwapChainHook/Vk] ImGui VkResult=%d", (int)r);
     };

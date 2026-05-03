@@ -30,7 +30,6 @@
 //  2021-03-04: Initial version.
 
 #include "imgui.h"
-#include <utility>
 #ifndef IMGUI_DISABLE
 #include "imgui_impl_android.h"
 #include <time.h>
@@ -282,11 +281,6 @@ void ImGui_ImplAndroid_Shutdown()
     io.BackendPlatformName = nullptr;
 }
 
-#define LOG_TAG "INJECT"
-#define LOGD(...)  __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
-#define LOGI(...)  __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
-#define LOGE(...)  __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
-
 void ImGui_ImplAndroid_NewFrame()
 {
     ImGuiIO& io = ImGui::GetIO();
@@ -294,7 +288,6 @@ void ImGui_ImplAndroid_NewFrame()
     // Setup display size (every frame to accommodate for window resizing)
     int32_t window_width = ANativeWindow_getWidth(g_Window);
     int32_t window_height = ANativeWindow_getHeight(g_Window);
-    // std::swap(window_width, window_height);
     int display_width = window_width;
     int display_height = window_height;
 

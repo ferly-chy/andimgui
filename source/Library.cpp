@@ -67,35 +67,21 @@ void main_thread()
 
 static std::atomic<bool> g_Initialized{false};
 
-extern "C" jint JNIEXPORT JNI_OnLoad(JavaVM* vm, void* key)
+extern "C" jint JNIEXPORT JNI_OnLoad(JavaVM* vm, void* reserved)
 {
-	// key 1337 is passed by injector
-	if (key != (void*)1337)
-		return JNI_VERSION_1_6;
+	LOGI("JNI_OnLoad called (Manual or Injector).");
 
-	LOGI("JNI_OnLoad called by injector.");
-
-	LOGI("JavaVM: %p", vm);
-
-	JNIEnv* env = nullptr;
-	if (vm->GetEnv((void**)&env, JNI_VERSION_1_6) == JNI_OK)
-	{
-		LOGI("JavaEnv: %p", env);
-	}
-
-	if (!g_Initialized.exchange(true))
+	// Inisialisasi thread utama jika belum pernah dijalankan
+	if (!g_Initialized.exchange(true)) {
 		std::thread(main_thread).detach();
+	}
 
 	return JNI_VERSION_1_6;
 }
 
 __attribute__((constructor)) void ctor()
 {
-	LOGI("ctor");
-
-	// Enable if not use AndKittyInjector
-	// if (!g_Initialized.exchange(true))
-	// 	std::thread(main_thread).detach();
+	LOGI("Library constructor called.");
 }
 
 __attribute__((destructor)) void dtor() { LOGI("dtor"); }

@@ -15,10 +15,10 @@ namespace LogHelper {
     enum class Level : uint8_t { Debug = 0, Info, Warn, Error, Fatal };
 
     // Single platform dispatch for printf-style logging
-    inline void emitRaw(Level level, const char* fmt, ...)
 #ifdef __GNUC__
-        __attribute__((format(printf, 2, 3)))
+    __attribute__((format(printf, 2, 3)))
 #endif
+    inline void emitRaw(Level level, const char* fmt, ...)
     {
         va_list args;
         va_start(args, fmt);

@@ -15,7 +15,8 @@
 #pragma once
 
 //---- Define assertion handler. Defaults to calling assert().
-// If your macro uses multiple statements, make sure is enclosed in a 'do { .. } while (0)' block so it can be used as a single statement.
+// - If your macro uses multiple statements, make sure is enclosed in a 'do { .. } while (0)' block so it can be used as a single statement.
+// - Compiling with NDEBUG will usually strip out assert() to nothing, which is NOT recommended because we use asserts to notify of programmer mistakes.
 //#define IM_ASSERT(_EXPR)  MyAssert(_EXPR)
 //#define IM_ASSERT(_EXPR)  ((void)(_EXPR))     // Disable asserts
 
@@ -48,7 +49,7 @@
 //#define IMGUI_DISABLE_FILE_FUNCTIONS                      // Don't implement ImFileOpen/ImFileClose/ImFileRead/ImFileWrite and ImFileHandle at all (replace them with dummies)
 //#define IMGUI_DISABLE_DEFAULT_FILE_FUNCTIONS              // Don't implement ImFileOpen/ImFileClose/ImFileRead/ImFileWrite and ImFileHandle so you can implement them yourself if you don't want to link with fopen/fclose/fread/fwrite. This will also disable the LogToTTY() function.
 //#define IMGUI_DISABLE_DEFAULT_ALLOCATORS                  // Don't implement default allocators calling malloc()/free() to avoid linking with them. You will need to call ImGui::SetAllocatorFunctions().
-//#define IMGUI_DISABLE_DEFAULT_FONT                        // Disable default embedded font (ProggyClean.ttf), remove ~9.5 KB from output binary. AddFontDefault() will assert.
+//#define IMGUI_DISABLE_DEFAULT_FONT                        // Disable default embedded fonts (ProggyClean/ProggyForever), remove ~9 KB + ~14 KB from output binary. AddFontDefaultXXX() functions will assert.
 //#define IMGUI_DISABLE_SSE                                 // Disable use of SSE intrinsics even if available
 
 //---- Enable Test Engine / Automation features.
@@ -83,6 +84,7 @@
 
 //---- Use FreeType to build and rasterize the font atlas (instead of stb_truetype which is embedded by default in Dear ImGui)
 // Requires FreeType headers to be available in the include path. Requires program to be compiled with 'misc/freetype/imgui_freetype.cpp' (in this repository) + the FreeType library (not provided).
+// Note that imgui_freetype.cpp may be used _without_ this define, if you manually call ImFontAtlas::SetFontLoader(). The define is simply a convenience.
 // On Windows you may use vcpkg with 'vcpkg install freetype --triplet=x64-windows' + 'vcpkg integrate install'.
 //#define IMGUI_ENABLE_FREETYPE
 
@@ -100,28 +102,17 @@
 
 //---- Define constructor and implicit cast operators to convert back<>forth between your math types and ImVec2/ImVec4.
 // This will be inlined as part of ImVec2 and ImVec4 class declarations.
-// #include <glm/vec2.hpp>
-// #include <glm/vec3.hpp>
-// #include <glm/vec4.hpp>
-// #include "UEGame/UECore/CoreUObject_structs.h"
+/*
+#define IM_VEC2_CLASS_EXTRA                                                     \
+        constexpr ImVec2(const MyVec2& f) : x(f.x), y(f.y) {}                   \
+        operator MyVec2() const { return MyVec2(x,y); }
 
-// #define IM_VEC2_CLASS_EXTRA                                                     \
-//         constexpr ImVec2(const glm::vec2& f) : x(f.x), y(f.y) {}                \
-//         operator glm::vec2() const { return glm::vec2(x, y); }                  \
-//         constexpr ImVec2(const glm::vec3& f) : x(f.x), y(f.y) {}                \
-//         operator glm::vec3() const { return glm::vec3(x, y, 0.0f); }            \
-//         constexpr ImVec2(const SDK::FVector2D& f) : x(f.X), y(f.Y) {}           \
-//         operator SDK::FVector2D() const { return SDK::FVector2D{ x, y }; }
-
-// #define IM_VEC4_CLASS_EXTRA                                                                  \
-//         constexpr ImVec4(const glm::vec4& f) : x(f.x), y(f.y), z(f.z), w(f.w) {}             \
-//         operator glm::vec4() const { return glm::vec4(x, y, z, w); }                         \
-//         constexpr ImVec4(const SDK::FLinearColor& f) : x(f.R), y(f.G), z(f.B), w(f.A) {}     \
-//         operator SDK::FLinearColor() const { return SDK::FLinearColor{ x, y, z, w }; }       \
-//         constexpr ImVec4(const SDK::FVector& f) : x(f.X), y(f.Y), z(f.Z), w(0.0f) {}         \
-//         operator SDK::FVector() const { return SDK::FVector{ x, y, z }; }
+#define IM_VEC4_CLASS_EXTRA                                                     \
+        constexpr ImVec4(const MyVec4& f) : x(f.x), y(f.y), z(f.z), w(f.w) {}   \
+        operator MyVec4() const { return MyVec4(x,y,z,w); }
+*/
 //---- ...Or use Dear ImGui's own very basic math operators.
-#define IMGUI_DEFINE_MATH_OPERATORS
+//#define IMGUI_DEFINE_MATH_OPERATORS
 
 //---- Use 32-bit vertex indices (default is 16-bit) is one way to allow large meshes with more than 64K vertices.
 // Your renderer backend will need to support it (most example renderer backends support both 16/32-bit indices).
