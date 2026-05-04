@@ -6,6 +6,7 @@ build/
 cmake-build-debug-system/
 cmake-build-release-system/
 
+.qwen
 .claude/
 .gemini
 docs/
