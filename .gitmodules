@@ -6,3 +6,6 @@
 	path = external/KittyMemory
 	url = https://github.com/MJx0/KittyMemory.git
 	branch = master
+[submodule "external/omath"]
+	path = external/omath
+	url = https://github.com/orange-cpp/omath

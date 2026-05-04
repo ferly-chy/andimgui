@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rm *)",
+      "Bash(cat)",
+      "Bash(import *)",
+      "Bash(with)",
+      "Bash(as *)",
+      "Bash(content *)",
+      "Bash('void* maincamera = camera_get_main ? camera_get_main() : nullptr;',)",
+      "Bash('void* maincamera = camera_get_main.isvalid() ? camera_get_main() : nullptr;')",
+      "Bash('if (get_isalive && !get_isalive(agent)) continue;',)",
+      "Bash('if (get_isalive.isvalid() && !get_isalive(agent)) continue;')",
+      "Bash('if (get_isplayer && get_isplayer(agent)) continue;',)",
+      "Bash('if (get_isplayer.isvalid() && get_isplayer(agent)) continue;')",
+      "Bash('if (get_agenttype) {',)",
+      "Bash('if (get_agenttype.isvalid()) {')",
+      "Bash(camera_worldtoscreenpoint)",
+      "Bash('if (get_chestposition && camera_worldtoscreenpoint) {',)",
+      "Bash('if (get_chestposition.isvalid() && camera_worldtoscreenpoint.isvalid()) {')",
+      "Bash(f.write)",
+      "Bash(eof)",
+      "Bash(python3 *)"
+    ]
+  },
+  "$version": 3
+}
