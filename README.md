@@ -62,5 +62,14 @@ Inject into a target app using [AndKittyInjector v5.1.0](https://github.com/MJx0
 
 ## Credits
 
-- [AndKittyInjector](https://github.com/MJx0/AndKittyInjector)
-- [Dobby](https://github.com/jmpews/Dobby)
+This project uses the following libraries and tools:
+
+### Injection & Memory
+- [AndKittyInjector](https://github.com/MJx0/AndKittyInjector) - Android library injector
+- [Dobby](https://github.com/jmpews/Dobby) - Inline hook framework
+- [KittyMemory](https://github.com/MJx0/KittyMemory) - Memory manipulation library for Android
+- [KittyMemoryEx](https://github.com/MJx0/KittyMemoryEx) - Extended memory manipulation library (pvm syscall)
+
+### UI & Graphics
+- [Dear ImGui](https://github.com/ocornut/imgui) - Immediate mode GUI library
+- [omath](https://github.com/orange-cpp/omath) - Simple math library for C++
