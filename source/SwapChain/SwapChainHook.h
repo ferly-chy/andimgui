@@ -2,8 +2,7 @@
 
 #include <functional>
 
-namespace SwapChainHook
-{
+namespace SwapChainHook {
 
 void Install();
 

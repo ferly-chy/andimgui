@@ -11,7 +11,7 @@ endif()
 
 project(AndSwapChainHook C CXX ASM)
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Optimization flags for smaller binary size
@@ -19,6 +19,10 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release")
     add_compile_options(-fvisibility=hidden -ffunction-sections -fdata-sections)
     add_link_options(-Wl,--gc-sections -Wl,--strip-all -Wl,--exclude-libs,ALL)
 endif()
+
+# BNM setup
+add_subdirectory(external/BNM)
+target_include_directories(BNM PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/external/Dobby")
 
 file(GLOB_RECURSE COMMON_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/source/*.cpp
@@ -64,12 +68,14 @@ include_directories(
     ${KITTY_INCLUDE_DIR}
 )
 
+
 set(LIBS
     android
     log
     vulkan
     GLESv3
     EGL
+    BNM
     ${CMAKE_CURRENT_SOURCE_DIR}/external/Dobby/arm64-v8a/libdobby.a
 )
 
