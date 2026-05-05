@@ -8,4 +8,7 @@
 	branch = master
 [submodule "external/omath"]
 	path = external/omath
-	url = https://github.com/orange-cpp/omath
+	url = https://github.com/orange-cpp/omath.git
+[submodule "external/BNM"]
+	path = external/BNM
+	url = https://github.com/yiixianx-ux/BNM.git
