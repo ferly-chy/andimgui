@@ -1,14 +1,33 @@
 #pragma once
 
-#include <cstdint>
 #include <cstddef>
-#include <cstdint>
 #include <cstring>
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/mman.h>
 #include <sys/prctl.h>
+
+#define __int8 char
+#define __int16 short
+#define __int32 int
+#define __int64 long long
+
+typedef char _BYTE;
+typedef short _WORD;
+typedef int _DWORD;
+typedef long long _QWORD;
+
+#define ASM_MOV(__reg) ({       \
+    uintptr_t __val;            \
+    asm __volatile__ (          \
+        "mov %0, " #__reg ";"   \
+        : "=r" (__val)          \
+        :                       \
+        :                       \
+    );                          \
+    __val;                      \
+})
 
 #define MAKE_CRASH()     \
     __asm__ volatile (   \
@@ -18,13 +37,3 @@
         "br x0;"         \
         : : :            \
     );
-
-template<int64_t v>
-inline int64_t Return() { return v; }
-
-template <typename Ret, typename... Args>
-Ret CallFunc(uintptr_t address, Args... args) {
-    using orig_func_t = Ret (*)(Args...);
-    orig_func_t f = (orig_func_t)address;
-    return f(args...);
-}

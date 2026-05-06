@@ -2,6 +2,7 @@
 
 #include <sys/mman.h>
 #include <unistd.h>
+#include <cerrno>
 #include <cinttypes>
 #include <cstring>
 #include <cstdio>
@@ -15,7 +16,8 @@ inline uintptr_t PageAlign(uintptr_t addr) {
     return addr & ~(pageSize - 1);
 }
 
-// 从 /proc/self/maps 获取地址所在页的保护权限，失败返回 -1
+// 从 /proc/self/maps 取地址所在页的保护权限。返回 -1 表示地址未落在任何映射段——
+// 通常意味着所给偏移整体已经过期（不是仅 RELRO 之类的可写性问题）。
 inline int GetPageProt(uintptr_t addr) {
     FILE* fp = fopen("/proc/self/maps", "r");
     if (!fp) return -1;
@@ -40,15 +42,21 @@ inline int GetPageProt(uintptr_t addr) {
 
 inline bool MemProtectRead(uintptr_t address, void* buffer, size_t len) {
     int origProt = GetPageProt(address);
-    if (origProt < 0) return false;
+    if (origProt < 0) {
+        LOGE("MemProtectRead: %p not in /proc/self/maps (stale offset?)", (void*)address);
+        return false;
+    }
     if (origProt & PROT_READ) {
         std::memcpy(buffer, reinterpret_cast<const void*>(address), len);
         return true;
     }
     uintptr_t pageStart = PageAlign(address);
     size_t totalSize = (address - pageStart) + len;
-    if (mprotect(reinterpret_cast<void*>(pageStart), totalSize, origProt | PROT_READ) != 0)
+    if (mprotect(reinterpret_cast<void*>(pageStart), totalSize, origProt | PROT_READ) != 0) {
+        LOGE("MemProtectRead: mprotect(+R) failed at page %p (orig=0x%x): %s",
+             (void*)pageStart, origProt, strerror(errno));
         return false;
+    }
     std::memcpy(buffer, reinterpret_cast<const void*>(address), len);
     mprotect(reinterpret_cast<void*>(pageStart), totalSize, origProt);
     return true;
@@ -56,15 +64,21 @@ inline bool MemProtectRead(uintptr_t address, void* buffer, size_t len) {
 
 inline bool MemProtectWrite(uintptr_t address, const void* data, size_t len) {
     int origProt = GetPageProt(address);
-    if (origProt < 0) return false;
+    if (origProt < 0) {
+        LOGE("MemProtectWrite: %p not in /proc/self/maps (stale offset?)", (void*)address);
+        return false;
+    }
     if (origProt & PROT_WRITE) {
         std::memcpy(reinterpret_cast<void*>(address), data, len);
         return true;
     }
     uintptr_t pageStart = PageAlign(address);
     size_t totalSize = (address - pageStart) + len;
-    if (mprotect(reinterpret_cast<void*>(pageStart), totalSize, origProt | PROT_WRITE) != 0)
+    if (mprotect(reinterpret_cast<void*>(pageStart), totalSize, origProt | PROT_WRITE) != 0) {
+        LOGE("MemProtectWrite: mprotect(+W) failed at page %p (orig=0x%x): %s",
+             (void*)pageStart, origProt, strerror(errno));
         return false;
+    }
     std::memcpy(reinterpret_cast<void*>(address), data, len);
     mprotect(reinterpret_cast<void*>(pageStart), totalSize, origProt);
     return true;

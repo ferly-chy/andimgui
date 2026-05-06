@@ -1,25 +1,27 @@
-#include "AndroidPlatform/AndroidPlatform.h"
-#include "Core/ElfScannerManager.h"
-#include "InputEvent/CustomHandleInput.h"
-#include "InputEvent/InputEventHook.h"
-#include "SwapChain/SwapChainHook.h"
-#include "Utils/CrashHandler.h"
-#include "Utils/FileLogger.h"
-#include "Utils/HookUtils.h"
-#include "Utils/Logger.h"
-#include "imgui/imgui.h"
-
-#include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <thread>
+
+#include "AndroidPlatform/AndroidPlatform.h"
+#include "AndroidPlatform/LooperDispatcher.h"
+#include "ImGui/ImGuiHost.h"
+#include "InputEvent/InputEventHook.h"
+#include "Utils/Config/Config.h"
+#include "Utils/CrashHandler/CrashHandler.h"
+#include "Utils/ElfScanner/ElfScannerManager.h"
+#include "Utils/HookUtils.h"
+#include "Utils/KittyEx.h"
+#include "Utils/Logger.h"
+
+#include "imgui/backends/imgui_impl_android.h"
+
+static LooperDispatcher g_MainLooperDispatcher;
 
 void main_thread()
 {
-	CrashHandler::Install();
-
 	KT::Init();
 
-	if (!Elf.scanAsync({
+	if (!Elf.Scan({
 			// "libc.so",
 			// "libUE4.so", // For Unreal Engine 4
 			// "libvulkan.so",
@@ -34,32 +36,41 @@ void main_thread()
 
 	GetLogFile("Debug")->Append("Hello\n");
 
-	SwapChainHook::SetRenderCallback([]() { ImGui::ShowDemoWindow(); });
-	SwapChainHook::Install();
+	ImGuiHost::Init({
+		.mode         = (CFG.InjectionMode == 0) ? InjectionMode::SwapHook : InjectionMode::Overlay,
+		.preferredApi = static_cast<GraphicsAPI>(CFG.RenderBackend),
+		.render = []()
+		{
+			ImGui::ShowDemoWindow();
+		},
+		.postToMainThread = [](std::function<void()> task)
+		{
+			g_MainLooperDispatcher.post(std::move(task));
+		},
+	});
+	g_MainLooperDispatcher.post([]() { g_MainLooperDispatcher.cleanup(); });
 
 	InputEventHook::Initialize([](AInputEvent* event)
 	{
-        if (event)
-        {
-            if (SwapChainHook::IsInitialized())
-            {
-				const ImVec2 size = { (float)SwapChainHook::GetWidth(), (float)SwapChainHook::GetHeight() };
-                CustomHandleInput::ImGui_ImplAndroid_HandleInputEvent(event, size);
-            }
+		if (!event) return;
 
-            int32_t event_type = AInputEvent_getType(event);
-            if (event_type == AINPUT_EVENT_TYPE_KEY)
+		if (ImGuiHost::IsInitialized())
+		{
+			ImGui_ImplAndroid_HandleInputEvent(event);
+		}
+
+        int32_t event_type = AInputEvent_getType(event);
+        if (event_type == AINPUT_EVENT_TYPE_KEY)
+        {
+            int32_t event_key_code = AKeyEvent_getKeyCode(event);
+            int32_t event_action = AKeyEvent_getAction(event);
+            if (event_key_code == AKEYCODE_VOLUME_DOWN && event_action == AKEY_EVENT_ACTION_DOWN)
             {
-                int32_t event_key_code = AKeyEvent_getKeyCode(event);
-                int32_t event_action = AKeyEvent_getAction(event);
-                if (event_key_code == AKEYCODE_VOLUME_DOWN && event_action == AKEY_EVENT_ACTION_DOWN)
-                {
-                    LOGI("keycode: AKEYCODE_VOLUME_DOWN, action: AKEY_EVENT_ACTION_DOWN");
-                }
-                else if (event_key_code == AKEYCODE_VOLUME_UP && event_action == AKEY_EVENT_ACTION_DOWN)
-                {
-                    LOGI("keycode: AKEYCODE_VOLUME_UP, action: AKEY_EVENT_ACTION_DOWN");
-                }
+                LOGI("keycode: AKEYCODE_VOLUME_DOWN, action: AKEY_EVENT_ACTION_DOWN");
+            }
+            else if (event_key_code == AKEYCODE_VOLUME_UP && event_action == AKEY_EVENT_ACTION_DOWN)
+            {
+                LOGI("keycode: AKEYCODE_VOLUME_UP, action: AKEY_EVENT_ACTION_DOWN");
             }
         }
     });
@@ -93,9 +104,14 @@ __attribute__((constructor)) void ctor()
 {
 	LOGI("ctor");
 
+	CrashHandler::Install();
+
 	// Enable if not use AndKittyInjector
 	// if (!g_Initialized.exchange(true))
 	// 	std::thread(main_thread).detach();
 }
 
 __attribute__((destructor)) void dtor() { LOGI("dtor"); }
+
+#include "AndroidPlatform/android_native_app_glue.h"
+extern "C" void android_main(struct android_app* /*state*/) { app_dummy(); }

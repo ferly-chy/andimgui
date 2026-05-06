@@ -4,6 +4,14 @@
 #include <vector>
 #include <algorithm>
 
+// #include "Fonts/Consolas.h"
+// #include "Fonts/MiSansVF.h"
+// #include "Fonts/SourceHanSansHWSC_VF.h"
+// #include "Fonts/LXGWWenKaiMonoRegular.h"
+// #include "Fonts/fontawesome-brands.h"
+// #include "Fonts/fontawesome-regular.h"
+// #include "Fonts/fontawesome-solid.h"
+// #include "Fonts/fontawesome.h"
 #include "Utils/Logger.h"
 
 ResourceManager& ResourceManager::GetInstance() {
@@ -99,13 +107,13 @@ bool ResourceManager::initializeFonts(float fontSize) {
         // 字体粗细调整: <1.0更细, 1.0正常, >1.0更粗 (建议范围 0.8-1.5)
         fontConfig.RasterizerMultiply = 1.1f;
 
-        m_CurrentFont = io.Fonts->AddFontFromFileTTF(
+        m_zhFont = io.Fonts->AddFontFromFileTTF(
             systemFontPath.c_str(),
             fontSize,
             &fontConfig,
             io.Fonts->GetGlyphRangesChineseFull());
         
-        if (m_CurrentFont) {
+        if (m_zhFont) {
             FLOGI("Successfully loaded system Chinese font: {}", systemFontPath);
         } else {
             FLOGE("Failed to load system font from: {}", systemFontPath);
@@ -113,15 +121,86 @@ bool ResourceManager::initializeFonts(float fontSize) {
     }
     
     // 如果系统字体加载失败，尝试使用内嵌字体作为备用
-    if (!m_CurrentFont) {
+    if (!m_zhFont) {
         FLOGW("Falling back to embedded font");
-        // m_CurrentFont = io.Fonts->AddFontFromMemoryCompressedBase85TTF(Consolas_compressed_data_base85, 20.0f);
-        // m_CurrentFont = io.Fonts->AddFontFromMemoryCompressedBase85TTF(SourceHanSansHWSC_VF_compressed_data_base85, 30.0f, nullptr, io.Fonts->GetGlyphRangesChineseFull());
-        // m_CurrentFont = io.Fonts->AddFontFromMemoryCompressedBase85TTF(MiSansVF_compressed_data_base85, 27.0f, nullptr, io.Fonts->GetGlyphRangesChineseFull());
-        // m_CurrentFont = io.Fonts->AddFontFromMemoryCompressedBase85TTF(LXGWWenKaiMonoRegular_compressed_data_base85, 25.0f, nullptr, io.Fonts->GetGlyphRangesChineseFull());
+        // m_zhFont = io.Fonts->AddFontFromMemoryCompressedBase85TTF(Consolas_compressed_data_base85, 20.0f);
+        // m_zhFont = io.Fonts->AddFontFromMemoryCompressedBase85TTF(SourceHanSansHWSC_VF_compressed_data_base85, 30.0f, nullptr, io.Fonts->GetGlyphRangesChineseFull());
+        // m_zhFont = io.Fonts->AddFontFromMemoryCompressedBase85TTF(MiSansVF_compressed_data_base85, 27.0f, nullptr, io.Fonts->GetGlyphRangesChineseFull());
+        // m_zhFont = io.Fonts->AddFontFromMemoryCompressedBase85TTF(LXGWWenKaiMonoRegular_compressed_data_base85, 25.0f, nullptr, io.Fonts->GetGlyphRangesChineseFull());
     }
     
-    IM_ASSERT(m_CurrentFont != nullptr);
+    IM_ASSERT(m_zhFont != nullptr);
 
-    return m_CurrentFont != nullptr;
+    // 加载图标字体
+    // static const ImWchar icons_ranges[] = {ICON_MIN_FA, ICON_MAX_FA, 0};
+    // ImFontConfig icons_config;
+    // icons_config.MergeMode = true;
+    // icons_config.PixelSnapH = true;
+    // icons_config.OversampleH = 3.0f;
+    // icons_config.OversampleV = 3.0f;
+    // icons_config.SizePixels = fontSize;
+
+    // m_iconFonts[0] = io.Fonts->AddFontFromMemoryCompressedTTF(
+    //     (const void*)&font_awesome_brands_compressed_data, 
+    //     sizeof(font_awesome_brands_compressed_data), 
+    //     0.0f, &icons_config, icons_ranges
+    // );
+
+    // m_iconFonts[1] = io.Fonts->AddFontFromMemoryCompressedTTF(
+    //     (const void*)&font_awesome_regular_compressed_data, 
+    //     sizeof(font_awesome_regular_compressed_data), 
+    //     0.0f, &icons_config, icons_ranges
+    // );
+
+    // m_iconFonts[2] = io.Fonts->AddFontFromMemoryCompressedTTF(
+    //     (const void*)&font_awesome_solid_compressed_data, 
+    //     sizeof(font_awesome_solid_compressed_data), 
+    //     0.0f, &icons_config, icons_ranges
+    // );
+
+    return m_zhFont != nullptr;
 }
+
+ImFont* ResourceManager::getIconFont(int index) const {
+    if (index >= 0 && index < 3) {
+        return m_iconFonts[index];
+    }
+    return nullptr;
+}
+
+// BaseTexData* ResourceManager::loadTexture(IGraphics* graphics, const char* filepath) {
+//     if (!graphics) return nullptr;
+    
+//     std::string key(filepath);
+//     auto it = m_textures.find(key);
+//     if (it != m_textures.end()) {
+//         return it->second;
+//     }
+    
+//     BaseTexData* texture = graphics->LoadTextureFromFile(filepath);
+//     if (texture) {
+//         m_textures[key] = texture;
+//     }
+//     return texture;
+// }
+
+// void ResourceManager::unloadTexture(IGraphics* graphics, BaseTexData* texture) {
+//     if (!graphics || !texture) return;
+    
+//     for (auto it = m_textures.begin(); it != m_textures.end(); ++it) {
+//         if (it->second == texture) {
+//             graphics->DeleteTexture(texture);
+//             m_textures.erase(it);
+//             break;
+//         }
+//     }
+// }
+
+// void ResourceManager::clearAllTextures(IGraphics* graphics) {
+//     if (!graphics) return;
+    
+//     for (auto& pair : m_textures) {
+//         graphics->DeleteTexture(pair.second);
+//     }
+//     m_textures.clear();
+// }

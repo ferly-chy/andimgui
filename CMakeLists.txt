@@ -13,8 +13,8 @@ project(AndSwapChainHook C CXX ASM)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Optimization flags for smaller binary size
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
     add_compile_options(-fvisibility=hidden -ffunction-sections -fdata-sections)
     add_link_options(-Wl,--gc-sections -Wl,--strip-all -Wl,--exclude-libs,ALL)
@@ -23,10 +23,8 @@ endif()
 file(GLOB_RECURSE COMMON_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/source/*.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/source/*.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/source/*.s
 )
-
-# Exclude android_native_app_glue.c (only the header is needed for struct definitions)
-list(FILTER COMMON_SOURCES EXCLUDE REGEX "android_native_app_glue\\.c$")
 
 file(GLOB IMGUI_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/imgui.cpp
@@ -53,10 +51,10 @@ set(LIBRARY_SOURCES
     ${COMMON_SOURCES}
     ${IMGUI_SOURCES}
     ${KITTY_SOURCES}
-    ${CMAKE_CURRENT_SOURCE_DIR}/source/PointerHook/trampoline.s
 )
 
 include_directories(
+    ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/source
     ${CMAKE_CURRENT_SOURCE_DIR}/source/Utils
     ${CMAKE_CURRENT_SOURCE_DIR}/external
@@ -81,7 +79,7 @@ add_library(${PROJECT_NAME} SHARED
 target_compile_definitions(${PROJECT_NAME} PRIVATE
     $<$<BOOL:${USE_KITTYMEMORYEX}>:kUSE_KITTYMEMORYEX>
     kNO_KEYSTONE
-    kENABLE_FORMAT_LOG
+    kUSE_LOGCAT # KITTY_LOGX
     kANDROID_LOG
     kANDROID_LOG_TAG="INJECT"
     kPROJECT_NAME="${PROJECT_NAME}"

@@ -6,7 +6,7 @@
 #include <android/native_window.h>
 #include <android/input.h>
 
-#include "Core/ElfScannerManager.h"
+#include "ElfScanner/ElfScannerManager.h"
 #include "Dobby/dobby.h"
 #include "Utils/Logger.h"
 

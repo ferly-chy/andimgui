@@ -8,6 +8,10 @@
 // 当 ImGui 需要文本输入时（io.WantTextInput == true），自动渲染一个
 // 全功能 QWERTY 键盘面板，直接通过 io.AddInputCharacter() 注入字符。
 // 完全不依赖 Android IME 框架，适用于注入/overlay 场景。
+//
+// 用法：
+//   // 每帧在 ImGui::Render() 之前调用：
+//   ImGuiSoftKeyboard::Draw();
 // ---------------------------------------------------------------------------
 
 namespace ImGuiSoftKeyboard

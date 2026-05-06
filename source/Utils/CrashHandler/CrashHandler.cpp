@@ -11,8 +11,7 @@
 #include <ucontext.h>
 #include <unistd.h>
 
-#include "BackTracer/BackTracer.h"
-#include "FileLogger.h"
+#include "Logger.h"
 
 namespace CrashHandler {
 
@@ -38,6 +37,16 @@ static constexpr size_t kAltStackSize = 64 * 1024; // 64 KiB
 static uint8_t          g_alt_stack[kAltStackSize];
 
 static bool g_installed = false;
+
+// Strip directory prefix from a path (replacement for old BackTracer::Trim).
+static const char* TrimPath(const char* path) {
+    if (!path) return "";
+    const char* base = path;
+    for (const char* p = path; *p; ++p) {
+        if (*p == '/' || *p == '\\') base = p + 1;
+    }
+    return base;
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -79,7 +88,7 @@ static void OnCrash(int signo, siginfo_t* info, void* ctx)
         }
     }
 
-    FileIO* log = GetLogFile("CrashLog");
+    auto* log = GetLogFile("CrashLog");
 
     // ── Header ──────────────────────────────────────────────────────────────
     log->Append("================================================================\n");
@@ -148,7 +157,7 @@ static void OnCrash(int signo, siginfo_t* info, void* ctx)
                     depth,
                     lr - reinterpret_cast<uintptr_t>(frame.dli_fbase),
                     frame.dli_fname
-                        ? BackTracer::Trim(frame.dli_fname)
+                        ? TrimPath(frame.dli_fname)
                         : "UNKNOWN",
                     frame.dli_sname ? frame.dli_sname : ""));
             } else {

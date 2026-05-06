@@ -7,9 +7,13 @@
 #include <android/native_window.h>
 #include <atomic>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <dlfcn.h>
 #include <functional>
 #include <mutex>
+#include <string>
+#include <unordered_map>
 
 #ifndef VK_USE_PLATFORM_ANDROID_KHR
 #define VK_USE_PLATFORM_ANDROID_KHR
@@ -17,7 +21,8 @@
 #include <vulkan/vulkan.h>
 
 #include "AndroidPlatform/AndroidPlatform.h"
-#include "Core/ResourceManager.h"
+#include "ImGui/ImGuiSetup.h"
+#include "Resource/ResourceManager.h"
 #include "Dobby/dobby.h"
 #include "ImGuiExtern/ImGuiSoftKeyboard.h"
 #include "Utils/Logger.h"
@@ -89,37 +94,15 @@ static bool InitImGuiOnGameContext(EGLDisplay display, EGLSurface surface)
     g_Width = w;
     g_Height = h;
 
-    // 创建 ImGui 上下文
-    IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
-
-    ImGuiIO &io = ImGui::GetIO();
-    io.IniFilename = nullptr;
-    io.DisplaySize = ImVec2((float)w, (float)h);
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-
-    // 样式
-    ImGui::StyleColorsDark();
-    ImGuiStyle &style = ImGui::GetStyle();
-    style.WindowBorderSize = 1.0f;
-    style.WindowRounding = 0.0f;
-    style.WindowTitleAlign = ImVec2(0.5f, 0.5f);
-    style.ScrollbarSize = 20.0f;
-    style.FramePadding = ImVec2(8.0f, 6.0f);
-    style.TouchExtraPadding = ImVec2(4.0f, 4.0f);
-    style.AntiAliasedLines = true;
-    style.AntiAliasedFill = true;
-    style.ScaleAllSizes(2.0f);
-
-    // 平台后端
     ANativeWindow* initWindow = AndroidPlatform::GetNativeWindow();
     if (!initWindow)
     {
         LOGE("[SwapChainHook] ANativeWindow is null, cannot init ImGui");
-        ImGui::DestroyContext();
         return false;
     }
-    ImGui_ImplAndroid_Init(initWindow);
+
+    ImGuiSetup::EnsureContext(initWindow);
+    ImGui::GetIO().DisplaySize = ImVec2((float)w, (float)h);
 
     // OpenGL 渲染后端（复用游戏 Context）
     ImGui_ImplOpenGL3_Init("#version 300 es");
@@ -172,8 +155,7 @@ static EGLBoolean Hooked_eglSwapBuffers(EGLDisplay display, EGLSurface surface)
                  g_ImGuiWindow, currentWindow, g_ImGuiEglContext, currentCtx);
         g_ImGuiReady.store(false);
         ImGui_ImplOpenGL3_Shutdown();
-        ImGui_ImplAndroid_Shutdown();
-        ImGui::DestroyContext();
+        ImGuiSetup::TeardownContext();
         g_GlesInitialized = false;
         g_ImGuiWindow = nullptr;
         g_ImGuiEglContext = EGL_NO_CONTEXT;
@@ -282,8 +264,7 @@ static EGLBoolean Hooked_eglSwapBuffersWithDamageKHR(
                  g_ImGuiWindow, currentWindow, g_ImGuiEglContext, currentCtx);
         g_ImGuiReady.store(false);
         ImGui_ImplOpenGL3_Shutdown();
-        ImGui_ImplAndroid_Shutdown();
-        ImGui::DestroyContext();
+        ImGuiSetup::TeardownContext();
         g_GlesInitialized = false;
         g_ImGuiWindow = nullptr;
         g_ImGuiEglContext = EGL_NO_CONTEXT;
@@ -674,9 +655,6 @@ static bool CreateVkImGuiResources()
  */
 static bool InitImGuiVulkan()
 {
-    IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
-
     // 确定逻辑显示尺寸（始终为横屏）
     // 当 preTransform 包含 90°/270° 旋转时，imageExtent 是竖屏尺寸，需要交换
     uint32_t displayW = g_VkSwapExtent.width;
@@ -688,32 +666,15 @@ static bool InitImGuiVulkan()
              (int)g_VkPreTransform, g_VkSwapExtent.width, g_VkSwapExtent.height, displayW, displayH);
     }
 
-    ImGuiIO &io = ImGui::GetIO();
-    io.IniFilename = nullptr;
-    io.DisplaySize = ImVec2((float)displayW, (float)displayH);
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-
-    ImGui::StyleColorsDark();
-    ImGuiStyle &style = ImGui::GetStyle();
-    style.WindowBorderSize = 1.0f;
-    style.WindowRounding = 0.0f;
-    style.WindowTitleAlign = ImVec2(0.5f, 0.5f);
-    style.ScrollbarSize = 20.0f;
-    style.FramePadding = ImVec2(8.0f, 6.0f);
-    style.TouchExtraPadding = ImVec2(4.0f, 4.0f);
-    style.AntiAliasedLines = true;
-    style.AntiAliasedFill = true;
-    style.ScaleAllSizes(2.0f);
-
-    // 平台后端
     ANativeWindow* vkWindow = AndroidPlatform::GetNativeWindow();
     if (!vkWindow)
     {
         LOGE("[SwapChainHook/Vk] ANativeWindow is null, cannot init ImGui");
-        ImGui::DestroyContext();
         return false;
     }
-    ImGui_ImplAndroid_Init(vkWindow);
+
+    ImGuiSetup::EnsureContext(vkWindow);
+    ImGui::GetIO().DisplaySize = ImVec2((float)displayW, (float)displayH);
 
     // Vulkan 渲染后端
     ImGui_ImplVulkan_InitInfo initInfo{};
@@ -809,8 +770,7 @@ static VkResult VKAPI_CALL Hooked_vkCreateSwapchainKHR(
     if (g_VkInitialized)
     {
         CleanupVkResources();
-        ImGui_ImplAndroid_Shutdown();
-        ImGui::DestroyContext();
+        ImGuiSetup::TeardownContext();
     }
     else if (g_GlesInitialized)
     {
@@ -818,8 +778,7 @@ static VkResult VKAPI_CALL Hooked_vkCreateSwapchainKHR(
         SCH_LOGI("[SwapChainHook/Vk] EGL→Vulkan transition, cleaning up EGL ImGui");
         g_ImGuiReady.store(false);
         ImGui_ImplOpenGL3_Shutdown();
-        ImGui_ImplAndroid_Shutdown();
-        ImGui::DestroyContext();
+        ImGuiSetup::TeardownContext();
         g_GlesInitialized = false;
         g_ImGuiWindow = nullptr;
         g_ImGuiEglContext = EGL_NO_CONTEXT;
@@ -862,8 +821,7 @@ static void VKAPI_CALL Hooked_vkDestroySwapchainKHR(
     if (swapchain == g_VkSwapchain && g_VkInitialized)
     {
         CleanupVkResources();
-        ImGui_ImplAndroid_Shutdown();
-        ImGui::DestroyContext();
+        ImGuiSetup::TeardownContext();
         g_ImGuiReady.store(false);
     }
     g_OrigVkDestroySwapchain(device, swapchain, pAllocator);
@@ -880,8 +838,7 @@ static void VKAPI_CALL Hooked_vkDestroyDevice(
         CleanupVkResources();
         if (ImGui::GetCurrentContext())
         {
-            ImGui_ImplAndroid_Shutdown();
-            ImGui::DestroyContext();
+            ImGuiSetup::TeardownContext();
         }
         g_ImGuiReady.store(false);
         g_VkDevice = VK_NULL_HANDLE;
@@ -1002,7 +959,6 @@ static VkResult VKAPI_CALL Hooked_vkQueuePresentKHR(
 
     return g_OrigVkQueuePresent(queue, pPresentInfo);
 }
-
 
 // ===========================================================================
 // 公开接口
@@ -1193,8 +1149,7 @@ void Uninstall()
     {
         if (g_GlesInitialized)
             ImGui_ImplOpenGL3_Shutdown();
-        ImGui_ImplAndroid_Shutdown();
-        ImGui::DestroyContext();
+        ImGuiSetup::TeardownContext();
     }
 
     g_GlesInitialized = false;

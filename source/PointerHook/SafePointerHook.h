@@ -5,7 +5,6 @@
 
 #include "HookUtils.h"
 #include "IPointerHook.h"
-#include "Logger.h"
 
 class SafePointerHook : virtual public IPointerHook {
 public:

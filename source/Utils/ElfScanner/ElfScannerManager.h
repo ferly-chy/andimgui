@@ -3,7 +3,6 @@
 #include <array>
 #include <set>
 #include <string>
-#include <string_view>
 
 #include "Utils/KittyEx.h"
 
@@ -15,16 +14,14 @@
     ELF_LIB_ENTRY(C,               c,               "libc.so")               \
     ELF_LIB_ENTRY(CRYPTO,          crypto,          "libcrypto.so")          \
     ELF_LIB_ENTRY(UE4,             UE4,             "libUE4.so")             \
-    ELF_LIB_ENTRY(UNITY,           unity,           "libUnity.so")           \
+    ELF_LIB_ENTRY(UNITY,           unity,           "libunity.so")           \
     ELF_LIB_ENTRY(IL2CPP,          il2cpp,          "libil2cpp.so")          \
     ELF_LIB_ENTRY(TERSAFE,         tersafe,         "libtersafe.so")         \
     ELF_LIB_ENTRY(GAME,            game,            "libgame.so")            \
     ELF_LIB_ENTRY(VULKAN,          vulkan,          "libvulkan.so")          \
     ELF_LIB_ENTRY(INPUT,           input,           "libinput.so")           \
     ELF_LIB_ENTRY(ART,             art,             "libart.so")             \
-    ELF_LIB_ENTRY(ANDROID_RUNTIME, android_runtime, "libandroid_runtime.so") \
-    ELF_LIB_ENTRY(GODOT,           godot,           "libgodot_android.so")   \
-    ELF_LIB_ENTRY(SEC2026,         sec2026,         "libsec2026.so")
+    ELF_LIB_ENTRY(ANDROID_RUNTIME, android_runtime, "libandroid_runtime.so")
 
 class ElfScannerManager {
 public:
@@ -49,7 +46,7 @@ public:
      * @param libraries 库名称列表（如 "libc.so", "libUE4.so"）
      * @return 是否全部成功扫描
      */
-    bool scanAsync(const std::set<std::string>& libraries);
+    bool Scan(const std::set<std::string>& libraries);
 
     // 由 X-macro 自动生成访问方法（O(1) 数组索引，无锁）
 #define ELF_LIB_ENTRY(ENUM, FUNC, SO) \
@@ -60,8 +57,6 @@ public:
 private:
     ElfScannerManager() = default;
     ~ElfScannerManager() = default;
-
-    static int libNameToIndex(std::string_view libraryName);
 
     std::array<ElfScanner, LIB_COUNT> m_scanners{};
 };
