@@ -11,7 +11,6 @@
 **环境要求：**
 - CMake 3.22.1+
 - Android NDK（ARM64-v8a，API 27+）
-- C++20
 
 ```bash
 # 设置 NDK_HOME 环境变量（替换为你的 NDK 实际路径）
@@ -28,7 +27,7 @@ cmake --build build
 使用 [AndKittyInjector v5.1.0](https://github.com/MJx0/AndKittyInjector) 注入到目标应用：
 
 ```bash
-./AndKittyInjector --package <包名> -lib libAndSwapChainHook.so --memfd --hide --watch
+./AndKittyInjector --package <包名> --libs libAndSwapChainHook.so --memfd --hide --watch
 ```
 
 ---
@@ -40,7 +39,6 @@ cmake --build build
 **Requirements:**
 - CMake 3.22.1+
 - Android NDK (ARM64-v8a, API 27+)
-- C++20
 
 ```bash
 # Set NDK_HOME environment variable (replace with your actual NDK path)
@@ -57,7 +55,7 @@ Output: `libAndSwapChainHook.so`
 Inject into a target app using [AndKittyInjector v5.1.0](https://github.com/MJx0/AndKittyInjector):
 
 ```bash
-./AndKittyInjector --package <package_name> -lib libAndSwapChainHook.so --memfd --hide --watch
+./AndKittyInjector --package <package_name> --libs libAndSwapChainHook.so --memfd --hide --watch
 ```
 
 ## Credits
