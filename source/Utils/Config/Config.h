@@ -1,49 +1,45 @@
 #pragma once
 
 #include <filesystem>
-#include <string>
+#include <span>
+#include <string_view>
 #include <variant>
 #include <vector>
 
-// ===== Config: 运行时配置数据 =====
-struct Config {
-    // --- 配置系统 ---
-    bool bAutoLoadConfigOnStartup = true;
+#include "ConfigStorage.h"
 
-    // --- 界面 ---
-    int  InjectionMode  = 0;        // 0 = SwapHook, 1 = Overlay
-    int  RenderBackend  = 1;        // 0 = OpenGL, 1 = Vulkan
-    bool bShowImGuiDraw = true;
-    float FontScale     = 1.0f;
+namespace Config {
+
+// 字段单点声明在 ConfigFields.inl, X-macro 同步生成 Schema 与序列化注册表。
+// 下游扩展: 在 include path 提供 ConfigFieldsExt.inl (X-macro 同语法) 即可并入 CFG。
+struct Schema {
+#define CONFIG_GROUP(label)
+#define CONFIG_FIELD(type, name, def)            type name = def;
+#define CONFIG_ARR(type, name, n, ...)           type name[n] = __VA_ARGS__;
+#define CONFIG_NOSAVE(type, name, def)           type name = def;
+#define CONFIG_NOSAVE_ARR(type, name, n, ...)    type name[n] = __VA_ARGS__;
+#include "ConfigFields.inl"
+#if __has_include("ConfigFieldsExt.inl")
+#include "ConfigFieldsExt.inl"
+#endif
+#undef CONFIG_GROUP
+#undef CONFIG_FIELD
+#undef CONFIG_ARR
+#undef CONFIG_NOSAVE
+#undef CONFIG_NOSAVE_ARR
 };
 
-extern Config CFG;
-
-// ===== 字段描述符: 用于自动序列化/反序列化 =====
-struct ConfigField {
-    std::string name;
-    std::variant<bool*, int*, float*> ptr;
+struct Field {
+    std::string_view name;
+    std::variant<bool*, int*, float*,
+                 std::span<int>, std::span<float>> ref;
 };
 
-std::vector<ConfigField> GetConfigFields(Config& c);
+const std::vector<Field>& GetFields();
 
-// ===== 路径工具 =====
-std::filesystem::path GetConfigSavePath();
+void Save(const std::filesystem::path& path);
+void Load(const std::filesystem::path& path);
 
-// ===== 配置文件管理 =====
-std::vector<std::string> ScanConfigFiles();
-const std::string& GetActiveConfigName();
-void SetActiveConfigName(const std::string& name);
-std::filesystem::path GetActiveConfigFullPath();
-std::string CreateNewConfigFile();
+}  // namespace Config
 
-// ===== 配置读写 =====
-void SaveConfig(const std::filesystem::path& path);
-void LoadConfig(const std::filesystem::path& path);
-void SaveActiveConfig();
-void LoadActiveConfig();
-
-// ===== 启动时自动加载 =====
-void SaveLastActiveConfigName();
-std::string LoadLastActiveConfigName();
-void AutoLoadConfigOnStartup();
+extern Config::Schema CFG;

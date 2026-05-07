@@ -1,123 +1,102 @@
 #include "Config.h"
-#include "Utils/Logger.h"
 
-#include <cstdint>
-#include <cstdlib>
-#include <cstdio>
+#include <android/log.h>
 #include <fstream>
-#include <unistd.h>
+#include <span>
+#include <string>
+#include <string_view>
+#include <type_traits>
 #include <unordered_map>
 #include <variant>
 #include <vector>
 
+#ifndef kANDROID_LOG_TAG
+#define kANDROID_LOG_TAG "Config"
+#endif
+#define LOGI(...) ((void)__android_log_print(ANDROID_LOG_INFO, kANDROID_LOG_TAG, __VA_ARGS__))
+
 namespace fs = std::filesystem;
 
-// ===== Config 全局实例 =====
+Config::Schema CFG{};
 
-Config CFG{};
+namespace Config {
 
-// ===== 字段注册表 =====
-
-std::vector<ConfigField> GetConfigFields(Config& c) {
-    return {
-        {"bAutoLoadConfigOnStartup", &c.bAutoLoadConfigOnStartup},
-
-        {"InjectionMode",  &c.InjectionMode},
-        {"RenderBackend",  &c.RenderBackend},
-        {"bShowImGuiDraw", &c.bShowImGuiDraw},
-        {"FontScale",      &c.FontScale},
-    };
+const std::vector<Field>& GetFields() {
+    static const std::vector<Field> fields = []{
+        std::vector<Field> r;
+#define CONFIG_GROUP(label)
+#define CONFIG_FIELD(type, name, def)         r.push_back({#name, &CFG.name});
+#define CONFIG_ARR(type, name, n, ...)        r.push_back({#name, std::span<type>(CFG.name)});
+#define CONFIG_NOSAVE(type, name, def)
+#define CONFIG_NOSAVE_ARR(type, name, n, ...)
+#include "ConfigFields.inl"
+#if __has_include("ConfigFieldsExt.inl")
+#include "ConfigFieldsExt.inl"
+#endif
+#undef CONFIG_GROUP
+#undef CONFIG_FIELD
+#undef CONFIG_ARR
+#undef CONFIG_NOSAVE
+#undef CONFIG_NOSAVE_ARR
+        return r;
+    }();
+    return fields;
 }
 
-// ===== 路径工具 =====
+namespace {
 
-std::filesystem::path getExternalStorage() {
-    char* path = getenv("EXTERNAL_STORAGE");
-    if (path) {
-        return std::filesystem::path(path);
-    } else {
-        return "/sdcard";
-    }
+const std::unordered_map<std::string_view, const Field*>& FieldIndex() {
+    static const auto idx = []{
+        std::unordered_map<std::string_view, const Field*> m;
+        const auto& list = GetFields();
+        m.reserve(list.size());
+        for (const auto& f : list) m.emplace(f.name, &f);
+        return m;
+    }();
+    return idx;
 }
 
-fs::path GetConfigSavePath() {
-    return getExternalStorage() / "Android" / "data" / getprogname() / "cache";
-}
-
-// ===== 配置文件管理 =====
-
-static std::string s_ActiveConfigName = ".conf_0";
-
-std::vector<std::string> ScanConfigFiles() {
-    std::vector<std::string> result;
-    fs::path dir = GetConfigSavePath();
-    if (!fs::exists(dir)) return result;
-
-    for (const auto& entry : fs::directory_iterator(dir)) {
-        if (!entry.is_regular_file()) continue;
-        std::string name = entry.path().filename().string();
-        if (name.starts_with(".conf_")) {
-            result.push_back(name);
+// 把数组 token "a,b,c" 写入 span<T>; 多余 token 丢弃, 不足保持原值
+template <typename T>
+void ParseArrayInto(std::string_view value, std::span<T> dst) {
+    size_t i = 0, start = 0;
+    while (i < dst.size() && start <= value.size()) {
+        size_t comma = value.find(',', start);
+        std::string_view tok = value.substr(start, comma == std::string_view::npos ? std::string_view::npos : comma - start);
+        if (!tok.empty()) {
+            std::string s(tok);  // std::sto* 需要 NUL 结尾
+            if constexpr (std::is_same_v<T, int>)        dst[i] = std::stoi(s);
+            else if constexpr (std::is_same_v<T, float>) dst[i] = std::stof(s);
+            ++i;
         }
+        if (comma == std::string_view::npos) break;
+        start = comma + 1;
     }
-    std::sort(result.begin(), result.end());
-    return result;
 }
 
-const std::string& GetActiveConfigName() {
-    return s_ActiveConfigName;
-}
+}  // namespace
 
-void SetActiveConfigName(const std::string& name) {
-    s_ActiveConfigName = name;
-    LOGI("Active config set to: %s", name.c_str());
-    SaveLastActiveConfigName();
-}
-
-fs::path GetActiveConfigFullPath() {
-    return GetConfigSavePath() / s_ActiveConfigName;
-}
-
-std::string CreateNewConfigFile() {
-    fs::path dir = GetConfigSavePath();
-    if (!fs::exists(dir)) {
-        fs::create_directories(dir);
-    }
-
-    int maxNum = -1;
-    for (const auto& entry : fs::directory_iterator(dir)) {
-        if (!entry.is_regular_file()) continue;
-        std::string name = entry.path().filename().string();
-        if (name.starts_with(".conf_")) {
-            try {
-                int num = std::stoi(name.substr(5));
-                if (num > maxNum) maxNum = num;
-            } catch (...) {}
-        }
-    }
-
-    std::string newName = ".conf_" + std::to_string(maxNum + 1);
-    fs::path newPath = dir / newName;
-    SaveConfig(newPath);
-    LOGI("Created new config file: %s", newName.c_str());
-    return newName;
-}
-
-// ===== 序列化 =====
-
-void SaveConfig(const fs::path& path) {
+void Save(const fs::path& path) {
     std::ofstream file(path, std::ios::binary | std::ios::out);
     if (!file.is_open()) {
         LOGI("Failed to open file for save config: %s", path.c_str());
         return;
     }
 
-    auto fields = GetConfigFields(CFG);
+    const auto& fields = GetFields();
     for (const auto& f : fields) {
         file << f.name << '=';
-        std::visit([&file](auto* p) {
-            file << *p;
-        }, f.ptr);
+        std::visit([&file](auto&& r) {
+            using R = std::decay_t<decltype(r)>;
+            if constexpr (std::is_pointer_v<R>) {
+                file << *r;
+            } else {
+                for (size_t i = 0; i < r.size(); ++i) {
+                    if (i) file << ',';
+                    file << r[i];
+                }
+            }
+        }, f.ref);
         file << '\n';
     }
 
@@ -125,19 +104,15 @@ void SaveConfig(const fs::path& path) {
     LOGI("Configuration saved (%zu fields) to %s", fields.size(), path.c_str());
 }
 
-void LoadConfig(const fs::path& path) {
+void Load(const fs::path& path) {
     std::ifstream file(path, std::ios::binary | std::ios::in);
     if (!file.is_open()) {
         LOGI("Failed to open file for load config: %s", path.c_str());
         return;
     }
 
-    auto fields = GetConfigFields(CFG);
-    std::unordered_map<std::string, ConfigField*> fieldMap;
-    fieldMap.reserve(fields.size());
-    for (auto& f : fields) {
-        fieldMap[f.name] = &f;
-    }
+    const auto& fields = GetFields();
+    const auto& fieldMap = FieldIndex();
 
     std::string line;
     size_t loaded = 0;
@@ -145,25 +120,29 @@ void LoadConfig(const fs::path& path) {
         size_t pos = line.find('=');
         if (pos == std::string::npos) continue;
 
-        std::string key = line.substr(0, pos);
-        std::string value = line.substr(pos + 1);
+        std::string_view key(line.data(), pos);
+        std::string_view value(line.data() + pos + 1, line.size() - pos - 1);
 
         auto it = fieldMap.find(key);
         if (it == fieldMap.end()) continue;
 
         try {
-            std::visit([&value](auto* p) {
-                using T = std::remove_pointer_t<decltype(p)>;
-                if constexpr (std::is_same_v<T, bool>)
-                    *p = static_cast<bool>(std::stoi(value));
-                else if constexpr (std::is_same_v<T, int>)
-                    *p = std::stoi(value);
-                else if constexpr (std::is_same_v<T, float>)
-                    *p = std::stof(value);
-            }, it->second->ptr);
+            std::visit([value](auto&& r) {
+                using R = std::decay_t<decltype(r)>;
+                if constexpr (std::is_pointer_v<R>) {
+                    using V = std::remove_pointer_t<R>;
+                    std::string s(value);
+                    if constexpr (std::is_same_v<V, bool>)       *r = static_cast<bool>(std::stoi(s));
+                    else if constexpr (std::is_same_v<V, int>)   *r = std::stoi(s);
+                    else if constexpr (std::is_same_v<V, float>) *r = std::stof(s);
+                } else {  // span<T>
+                    ParseArrayInto<typename R::element_type>(value, r);
+                }
+            }, it->second->ref);
             ++loaded;
         } catch (const std::exception& e) {
-            LOGI("Failed to parse config field '%s': %s", key.c_str(), e.what());
+            LOGI("Failed to parse config field '%.*s': %s",
+                 static_cast<int>(key.size()), key.data(), e.what());
         }
     }
 
@@ -171,82 +150,4 @@ void LoadConfig(const fs::path& path) {
     LOGI("Configuration loaded (%zu/%zu fields) from %s", loaded, fields.size(), path.c_str());
 }
 
-void SaveActiveConfig() {
-    fs::path path = GetActiveConfigFullPath();
-    SaveConfig(path);
-    SaveLastActiveConfigName();
-}
-
-void LoadActiveConfig() {
-    fs::path path = GetActiveConfigFullPath();
-    if (!fs::exists(path)) {
-        LOGI("Config file does not exist, saving defaults: %s", path.c_str());
-        SaveConfig(path);
-    }
-    LoadConfig(path);
-    SaveLastActiveConfigName();
-}
-
-// ===== 持久化上次使用的配置文件名 =====
-
-static fs::path GetLastActiveConfigFilePath() {
-    return GetConfigSavePath() / ".conf_active";
-}
-
-void SaveLastActiveConfigName() {
-    fs::path p = GetLastActiveConfigFilePath();
-    fs::path dir = p.parent_path();
-    if (!fs::exists(dir)) {
-        fs::create_directories(dir);
-    }
-    std::ofstream file(p, std::ios::out | std::ios::trunc);
-    if (file.is_open()) {
-        file << s_ActiveConfigName;
-        file.close();
-    } else {
-        LOGI("Failed to save last active config name to: %s", p.c_str());
-    }
-}
-
-std::string LoadLastActiveConfigName() {
-    fs::path p = GetLastActiveConfigFilePath();
-    if (!fs::exists(p)) {
-        return ".conf_0";
-    }
-    std::ifstream file(p, std::ios::in);
-    if (!file.is_open()) {
-        return ".conf_0";
-    }
-    std::string name;
-    std::getline(file, name);
-    file.close();
-    if (name.empty()) {
-        return ".conf_0";
-    }
-    return name;
-}
-
-// ===== 启动时自动加载 =====
-
-void AutoLoadConfigOnStartup() {
-    std::string lastName = LoadLastActiveConfigName();
-    LOGI("[Config] Last active config: %s", lastName.c_str());
-
-    fs::path configPath = GetConfigSavePath() / lastName;
-    if (!fs::exists(configPath)) {
-        LOGI("[Config] Config file not found, skipping auto-load: %s", configPath.c_str());
-        return;
-    }
-
-    s_ActiveConfigName = lastName;
-
-    LoadConfig(configPath);
-
-    if (!CFG.bAutoLoadConfigOnStartup) {
-        LOGI("[Config] bAutoLoadConfigOnStartup is false, reverting to defaults");
-        CFG = Config{};
-        return;
-    }
-
-    LOGI("[Config] Auto-loaded config: %s", lastName.c_str());
-}
+}  // namespace Config
