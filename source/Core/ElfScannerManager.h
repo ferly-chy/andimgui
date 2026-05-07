@@ -15,7 +15,7 @@
     ELF_LIB_ENTRY(C,               c,               "libc.so")               \
     ELF_LIB_ENTRY(CRYPTO,          crypto,          "libcrypto.so")          \
     ELF_LIB_ENTRY(UE4,             UE4,             "libUE4.so")             \
-    ELF_LIB_ENTRY(UNITY,           unity,           "libUnity.so")           \
+    ELF_LIB_ENTRY(UNITY,           unity,           "libunity.so")           \
     ELF_LIB_ENTRY(IL2CPP,          il2cpp,          "libil2cpp.so")          \
     ELF_LIB_ENTRY(TERSAFE,         tersafe,         "libtersafe.so")         \
     ELF_LIB_ENTRY(GAME,            game,            "libgame.so")            \

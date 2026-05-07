@@ -80,7 +80,6 @@ set(LIBS
 )
 
 add_library(${PROJECT_NAME} SHARED 
-    ${CMAKE_CURRENT_SOURCE_DIR}/source/Library.cpp
     ${LIBRARY_SOURCES}
 )
 

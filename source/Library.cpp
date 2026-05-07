@@ -26,25 +26,43 @@ using namespace std::chrono_literals;
  * BNM SETUP
  */
 
+static float speedMultiplier = 1.0f;
+static bool speedhackEnabled = false;
+static bool espEnabled = false;
+static bool espLines = false;
+static bool espBoxes = true;
+
+// Original pointer for the hook
+static float (*old_Time_get_timeScale)();
+
+// Hook function
+static float my_Time_get_timeScale() {
+  if (speedhackEnabled) {
+    return old_Time_get_timeScale() * speedMultiplier;
+  }
+  return old_Time_get_timeScale();
+}
+
 static void OnIl2CppLoaded() {
   LOGI("BNM: libil2cpp loaded successfully.");
 
   auto assembly = BNM::Image("Assembly-CSharp");
   if (!assembly) {
-    LOGE("BNM: Assembly-CSharp not found!");
-    return;
+    LOGW("BNM: Assembly-CSharp not found! This is normal for some games.");
   }
 
-  LOGI("BNM: Assembly-CSharp attached.");
+  // Hook UnityEngine.Time::get_timeScale
+  auto timeClass = BNM::Class("UnityEngine", "Time");
+  if (timeClass.IsValid()) {
+    auto get_timeScale = timeClass.GetMethod("get_timeScale");
+    if (get_timeScale.IsValid()) {
+      BNM::BasicHook(get_timeScale, (void *)my_Time_get_timeScale,
+                     (void **)&old_Time_get_timeScale);
+      LOGI("BNM: Hooked UnityEngine.Time::get_timeScale");
+    }
+  }
 
-  /**
-   * Example:
-   *
-   * auto playerClass = BNM::Class("Game", "PlayerData", assembly);
-   * if (playerClass.IsValid()) {
-   *     LOGI("BNM: PlayerData class found.");
-   * }
-   */
+  LOGI("BNM: Modding features applied.");
 }
 
 static void InitBNM() {
@@ -129,9 +147,32 @@ void main_thread() {
     ImGuiFX::TextRainbow("IL2CPP Space");
     ImGui::Separator();
 
-    static bool demo = false;
-    ImGui::Checkbox("demo", &demo);
+    if (ImGui::CollapsingHeader("Game Tweaks", ImGuiTreeNodeFlags_DefaultOpen)) {
+      ImGui::Checkbox("Enable Speedhack", &speedhackEnabled);
+      if (speedhackEnabled) {
+        ImGui::SliderFloat("Speed Multiplier", &speedMultiplier, 0.1f, 10.0f);
+      }
+    }
 
+    if (ImGui::CollapsingHeader("Visuals", ImGuiTreeNodeFlags_DefaultOpen)) {
+      ImGui::Checkbox("Enable ESP", &espEnabled);
+      if (espEnabled) {
+        ImGui::SameLine();
+        if (ImGui::Button("Settings"))
+          ImGui::OpenPopup("esp_settings");
+
+        if (ImGui::BeginPopup("esp_settings")) {
+          ImGui::Checkbox("Boxes", &espBoxes);
+          ImGui::Checkbox("Lines", &espLines);
+          ImGui::EndPopup();
+        }
+      }
+    }
+
+    ImGui::Separator();
+
+    static bool demo = false;
+    ImGui::Checkbox("Show ImGui Demo", &demo);
     if (demo) {
       ImGui::ShowDemoWindow(&demo);
     }
