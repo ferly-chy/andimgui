@@ -36,12 +36,47 @@ void main_thread()
 
 	GetLogFile("Debug")->Append("Hello\n");
 
+	Config::AutoLoadOnStartup();
+
 	ImGuiHost::Init({
 		.mode         = (CFG.InjectionMode == 0) ? InjectionMode::SwapHook : InjectionMode::Overlay,
 		.preferredApi = static_cast<GraphicsAPI>(CFG.RenderBackend),
 		.render = []()
 		{
-			ImGui::ShowDemoWindow();
+			ImGui::SetNextWindowSize(ImVec2(380, 0), ImGuiCond_FirstUseEver);
+			if (ImGui::Begin("AndSwapChainHook"))
+			{
+				ImGui::SeparatorText("Hook Mode");
+				const char* kModes[] = { "SwapHook", "Overlay" };
+				if (ImGui::Combo("##mode", &CFG.InjectionMode, kModes, IM_ARRAYSIZE(kModes)))
+					Config::SaveToActive();
+				ImGui::TextDisabled("Applies on next launch");
+
+				ImGui::SeparatorText("Render Backend");
+				const char* kApis[] = { "OpenGL", "Vulkan" };
+				if (ImGui::Combo("##api", &CFG.RenderBackend, kApis, IM_ARRAYSIZE(kApis)))
+				{
+					ImGuiHost::RequestSwitchBackend(static_cast<GraphicsAPI>(CFG.RenderBackend));
+					Config::SaveToActive();
+				}
+				if (ImGuiHost::GetMode() == InjectionMode::SwapHook)
+					ImGui::TextDisabled("SwapHook follows the host app");
+
+				ImGui::SeparatorText("Config");
+				if (ImGui::Checkbox("Auto load on startup", &CFG.bAutoLoadConfigOnStartup))
+					Config::SaveToActive();
+				if (ImGui::Button("Save"))   Config::SaveToActive();
+				ImGui::SameLine();
+				if (ImGui::Button("Reload")) Config::LoadFromActive();
+				ImGui::SameLine();
+				ImGui::Text("[%s]", Config::GetActiveName().c_str());
+
+				ImGui::SeparatorText("Debug");
+				static bool s_ShowDemo = false;
+				ImGui::Checkbox("ImGui Demo Window", &s_ShowDemo);
+				if (s_ShowDemo) ImGui::ShowDemoWindow(&s_ShowDemo);
+			}
+			ImGui::End();
 		},
 		.postToMainThread = [](std::function<void()> task)
 		{
@@ -81,7 +116,7 @@ static std::atomic<bool> g_Initialized{false};
 extern "C" jint JNIEXPORT JNI_OnLoad(JavaVM* vm, void* key)
 {
 	// key 1337 is passed by injector
-	if (key != (void*)1337)
+	if (key != (void*)20030331)
 		return JNI_VERSION_1_6;
 
 	LOGI("JNI_OnLoad called by injector.");
