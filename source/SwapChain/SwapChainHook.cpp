@@ -66,7 +66,32 @@ static PFNEGLSWAPBUFFERSWITHDAMAGEKHRPROC g_OrigEglSwapBuffersWithDamage =
     nullptr;
 static bool g_GlesInitialized = false;
 static ANativeWindow *g_ImGuiWindow = nullptr;
+static EGLDisplay g_ImGuiEglDisplay = EGL_NO_DISPLAY;
+static EGLSurface g_ImGuiEglSurface = EGL_NO_SURFACE;
 static EGLContext g_ImGuiEglContext = EGL_NO_CONTEXT;
+static uint32_t g_GlesFrameCounter = 0;
+
+static bool InitImGuiOnGameContext(EGLDisplay display, EGLSurface surface);
+static void DestroyCurrentImGuiContext(bool shutdownGlesBackend,
+                                       bool shutdownVulkanBackend);
+
+static void ResetGlesImGuiTracking() {
+  g_GlesInitialized = false;
+  g_ImGuiWindow = nullptr;
+  g_ImGuiEglDisplay = EGL_NO_DISPLAY;
+  g_ImGuiEglSurface = EGL_NO_SURFACE;
+  g_ImGuiEglContext = EGL_NO_CONTEXT;
+  g_GlesFrameCounter = 0;
+}
+
+static bool ReinitializeGlesImGui(const char *reason, EGLDisplay display, EGLSurface surface) {
+  SCH_LOGW("[SwapChainHook/GL] %s, reinitializing ImGui", reason);
+  g_ImGuiReady.store(false);
+  DestroyCurrentImGuiContext(g_GlesInitialized, false);
+  ResetGlesImGuiTracking();
+  AndroidPlatform::ResetNativeWindowCache();
+  return InitImGuiOnGameContext(display, surface);
+}
 
 static std::function<void()> GetRenderCallbackSnapshot() {
   std::lock_guard<std::mutex> lk(g_CallbackMutex);
@@ -303,72 +328,60 @@ static bool InitImGuiOnGameContext(EGLDisplay display, EGLSurface surface) {
   g_GlesInitialized = true;
   g_ImGuiReady.store(true);
   g_ImGuiWindow = initWindow;
+  g_ImGuiEglDisplay = display;
+  g_ImGuiEglSurface = surface;
   g_ImGuiEglContext = eglGetCurrentContext();
+  g_GlesFrameCounter = 0;
 
-  SCH_LOGI("[SwapChainHook] ImGui initialized on game EGL context=%p  %dx%d",
-           g_ImGuiEglContext, w, h);
+  SCH_LOGI("[SwapChainHook] ImGui initialized on game EGL display=%p surface=%p context=%p %dx%d",
+           display, surface, g_ImGuiEglContext, w, h);
   return true;
 }
 
-/**
- * @brief eglSwapBuffers hook
- *
- * 在游戏调用 eglSwapBuffers 提交帧之前：
- *   1. 保存完整 GL 状态
- *   2. 渲染 ImGui 到游戏的默认帧缓冲区（FBO 0）
- *   3. 恢复 GL 状态
- *   4. 调用原始 eglSwapBuffers
- */
-static EGLBoolean Hooked_eglSwapBuffers(EGLDisplay display,
-                                        EGLSurface surface) {
-  if (eglGetCurrentContext() == EGL_NO_CONTEXT)
-    return g_OrigEglSwapBuffers(display, surface);
+static bool EnsureGlesImGuiReady(EGLDisplay display, EGLSurface surface) {
+  const EGLContext currentContext = eglGetCurrentContext();
+  if (currentContext == EGL_NO_CONTEXT)
+    return false;
 
-  // Vulkan 已接管渲染，不再在 EGL 上绘制 ImGui
   if (g_VkInitialized)
-    return g_OrigEglSwapBuffers(display, surface);
+    return false;
 
-  if (!g_GlesInitialized) {
-    if (!InitImGuiOnGameContext(display, surface))
-      return g_OrigEglSwapBuffers(display, surface);
-  }
+  if (!g_GlesInitialized)
+    return InitImGuiOnGameContext(display, surface);
 
   ANativeWindow *currentWindow = AndroidPlatform::GetNativeWindow();
   if (!currentWindow)
-    return g_OrigEglSwapBuffers(display, surface);
+    return false;
 
-  // ANativeWindow 变化后需重新初始化 ImGui
-  if (g_GlesInitialized && currentWindow != g_ImGuiWindow) {
-    SCH_LOGI("[SwapChainHook] Window changed: %p->%p, reinitializing ImGui",
-             g_ImGuiWindow, currentWindow);
-    g_ImGuiReady.store(false);
-    DestroyCurrentImGuiContext(true, false);
-    g_GlesInitialized = false;
-    g_ImGuiWindow = nullptr;
-    g_ImGuiEglContext = EGL_NO_CONTEXT;
-    AndroidPlatform::ResetNativeWindowCache();
-    if (!InitImGuiOnGameContext(display, surface))
-      return g_OrigEglSwapBuffers(display, surface);
+  if (currentWindow != g_ImGuiWindow) {
+    return ReinitializeGlesImGui("ANativeWindow changed", display, surface);
   }
 
-  // --- 查询 EGL surface 实际尺寸 ---
+  if (display != g_ImGuiEglDisplay || surface != g_ImGuiEglSurface ||
+      currentContext != g_ImGuiEglContext) {
+    SCH_LOGW("[SwapChainHook/GL] EGL target changed: display %p->%p surface %p->%p context %p->%p",
+             g_ImGuiEglDisplay, display, g_ImGuiEglSurface, surface,
+             g_ImGuiEglContext, currentContext);
+    return ReinitializeGlesImGui("EGL display/surface/context changed", display, surface);
+  }
+
+  return true;
+}
+
+static void RenderGlesImGuiFrame(EGLDisplay display, EGLSurface surface) {
   EGLint sw = 0, sh = 0;
   eglQuerySurface(display, surface, EGL_WIDTH, &sw);
   eglQuerySurface(display, surface, EGL_HEIGHT, &sh);
 
-  // --- ImGui 渲染帧 ---
   ImGui_ImplOpenGL3_NewFrame();
   ImGui_ImplAndroid_NewFrame();
 
-  // 通过 DisplayFramebufferScale 计算 ImGui 渲染后端真实帧缓冲分辨率。
   {
     ImGuiIO &ioUpdate = ImGui::GetIO();
-    // DisplaySize 保持 ANativeWindow 尺寸（与触摸坐标一致）
     float dispW = ioUpdate.DisplaySize.x;
     float dispH = ioUpdate.DisplaySize.y;
     g_Width = (int)dispW;
     g_Height = (int)dispH;
-    // 设置 framebuffer scale: EGL surface 尺寸 / 显示尺寸
     if (sw > 0 && sh > 0 && dispW > 0 && dispH > 0) {
       ioUpdate.DisplayFramebufferScale =
           ImVec2((float)sw / dispW, (float)sh / dispH);
@@ -384,29 +397,49 @@ static EGLBoolean Hooked_eglSwapBuffers(EGLDisplay display,
   ImGuiSoftKeyboard::Draw();
   ImGui::Render();
 
-  // --- 保存游戏的 GL 状态 ---
   GlStateBackup glState = BackupGlState();
 
-  // 渲染到游戏的默认帧缓冲区（FBO 0）
-  // 注意：不做 glClear，保留游戏已有画面内容
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-  // viewport 使用 EGL surface 实际分辨率（framebuffer 尺寸）
   ImGuiIO &io = ImGui::GetIO();
   int fbW = (int)(io.DisplaySize.x * io.DisplayFramebufferScale.x);
   int fbH = (int)(io.DisplaySize.y * io.DisplayFramebufferScale.y);
   glViewport(0, 0, fbW, fbH);
 
-  // 开启混合，ImGui 绘制叠加在游戏画面之上
   glEnable(GL_BLEND);
   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
   ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
-  // --- 恢复游戏的 GL 状态 ---
+  GLenum glError = glGetError();
+  if (glError != GL_NO_ERROR) {
+    LOGE("[SwapChainHook/GL] RenderDrawData glGetError=0x%x", glError);
+  }
+
   RestoreGlState(glState);
 
-  // --- 调用原始 eglSwapBuffers ---
+  ++g_GlesFrameCounter;
+  if ((g_GlesFrameCounter % 300u) == 0u) {
+    SCH_LOGI("[SwapChainHook/GL] frame=%u display=%p surface=%p context=%p size=%dx%d fb=%dx%d",
+             g_GlesFrameCounter, display, surface, eglGetCurrentContext(),
+             g_Width, g_Height, fbW, fbH);
+  }
+}
+
+/**
+ * @brief eglSwapBuffers hook
+ *
+ * 在游戏调用 eglSwapBuffers 提交帧之前：
+ *   1. 保存完整 GL 状态
+ *   2. 渲染 ImGui 到游戏的默认帧缓冲区（FBO 0）
+ *   3. 恢复 GL 状态
+ *   4. 调用原始 eglSwapBuffers
+ */
+static EGLBoolean Hooked_eglSwapBuffers(EGLDisplay display,
+                                        EGLSurface surface) {
+  if (EnsureGlesImGuiReady(display, surface))
+    RenderGlesImGuiFrame(display, surface);
+
   return g_OrigEglSwapBuffers(display, surface);
 }
 
@@ -417,80 +450,8 @@ static EGLBoolean Hooked_eglSwapBuffersWithDamageKHR(EGLDisplay display,
                                                      EGLSurface surface,
                                                      EGLint *rects,
                                                      EGLint n_rects) {
-  if (eglGetCurrentContext() == EGL_NO_CONTEXT)
-    return g_OrigEglSwapBuffersWithDamage(display, surface, rects, n_rects);
-
-  // Vulkan 已接管渲染，不再在 EGL 上绘制 ImGui
-  if (g_VkInitialized)
-    return g_OrigEglSwapBuffersWithDamage(display, surface, rects, n_rects);
-
-  if (!g_GlesInitialized) {
-    if (!InitImGuiOnGameContext(display, surface))
-      return g_OrigEglSwapBuffersWithDamage(display, surface, rects, n_rects);
-  }
-
-  ANativeWindow *currentWindow = AndroidPlatform::GetNativeWindow();
-  if (!currentWindow)
-    return g_OrigEglSwapBuffersWithDamage(display, surface, rects, n_rects);
-
-  if (g_GlesInitialized && currentWindow != g_ImGuiWindow) {
-    SCH_LOGI("[SwapChainHook] WithDamage: Window changed: %p->%p, "
-             "reinitializing ImGui",
-             g_ImGuiWindow, currentWindow);
-    g_ImGuiReady.store(false);
-    DestroyCurrentImGuiContext(true, false);
-    g_GlesInitialized = false;
-    g_ImGuiWindow = nullptr;
-    g_ImGuiEglContext = EGL_NO_CONTEXT;
-    AndroidPlatform::ResetNativeWindowCache();
-    if (!InitImGuiOnGameContext(display, surface))
-      return g_OrigEglSwapBuffersWithDamage(display, surface, rects, n_rects);
-  }
-
-  EGLint sw = 0, sh = 0;
-  eglQuerySurface(display, surface, EGL_WIDTH, &sw);
-  eglQuerySurface(display, surface, EGL_HEIGHT, &sh);
-
-  ImGui_ImplOpenGL3_NewFrame();
-  ImGui_ImplAndroid_NewFrame();
-
-  {
-    ImGuiIO &ioUpdate = ImGui::GetIO();
-    float dispW = ioUpdate.DisplaySize.x;
-    float dispH = ioUpdate.DisplaySize.y;
-    g_Width = (int)dispW;
-    g_Height = (int)dispH;
-    if (sw > 0 && sh > 0 && dispW > 0 && dispH > 0)
-      ioUpdate.DisplayFramebufferScale =
-          ImVec2((float)sw / dispW, (float)sh / dispH);
-  }
-
-  ImGui::NewFrame();
-  ImGuiSoftKeyboard::PreUpdate();
-
-  if (auto callback = GetRenderCallbackSnapshot())
-    callback();
-
-  ImGuiSoftKeyboard::Draw();
-  ImGui::Render();
-
-  // --- 保存游戏的 GL 状态 ---
-  GlStateBackup glState = BackupGlState();
-
-  glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-  ImGuiIO &io = ImGui::GetIO();
-  int fbW = (int)(io.DisplaySize.x * io.DisplayFramebufferScale.x);
-  int fbH = (int)(io.DisplaySize.y * io.DisplayFramebufferScale.y);
-  glViewport(0, 0, fbW, fbH);
-
-  glEnable(GL_BLEND);
-  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
-  ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-
-  // --- 恢复游戏的 GL 状态 ---
-  RestoreGlState(glState);
+  if (EnsureGlesImGuiReady(display, surface))
+    RenderGlesImGuiFrame(display, surface);
 
   return g_OrigEglSwapBuffersWithDamage(display, surface, rects, n_rects);
 }
@@ -621,9 +582,10 @@ static void CleanupVkResources() {
   if (g_VkDevice == VK_NULL_HANDLE)
     return;
 
+  const bool wasVkInitialized = g_VkInitialized;
   vkDeviceWaitIdle(g_VkDevice);
 
-  if (g_VkInitialized)
+  if (wasVkInitialized)
     ImGui_ImplVulkan_Shutdown();
 
   for (auto semaphore : g_VkRenderCompleteSemaphores)
@@ -1054,9 +1016,7 @@ static VkResult VKAPI_CALL Hooked_vkCreateSwapchainKHR(
     SCH_LOGI("[SwapChainHook/Vk] EGL→Vulkan transition, cleaning up EGL ImGui");
     g_ImGuiReady.store(false);
     DestroyCurrentImGuiContext(true, false);
-    g_GlesInitialized = false;
-    g_ImGuiWindow = nullptr;
-    g_ImGuiEglContext = EGL_NO_CONTEXT;
+    ResetGlesImGuiTracking();
     AndroidPlatform::ResetNativeWindowCache();
   }
 
@@ -1410,7 +1370,7 @@ void Uninstall() {
   DestroyCurrentImGuiContext(g_GlesInitialized, false);
   AndroidPlatform::ResetNativeWindowCache();
 
-  g_GlesInitialized = false;
+  ResetGlesImGuiTracking();
   g_VkInitialized = false;
   g_ImGuiReady.store(false);
 
