@@ -1,0 +1,10 @@
+build/
+QWEN.md
+GEMINI.md
+.claude
+.qwen
+.gemini
+.cxx
+.env.cxx
+tmp
+

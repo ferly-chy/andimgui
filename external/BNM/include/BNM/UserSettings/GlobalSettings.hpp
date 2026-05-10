@@ -1,0 +1,283 @@
+#if __cplusplus < 202302L
+static_assert(false, "ByNameModding requires C++23 and above!");
+#endif
+
+// Pointer size validation
+#if defined(__LP64__) || defined(_LP64) || defined(__x86_64__) ||              \
+    defined(__aarch64__)
+static_assert(sizeof(void *) == 8,
+              "BNM: Compilation for 64-bit architecture detected, but pointer "
+              "size is not 8 bytes!");
+#else
+static_assert(sizeof(void *) == 4,
+              "BNM: Compilation for 32-bit architecture detected, but pointer "
+              "size is not 4 bytes!");
+#endif
+
+#pragma once
+
+// #define UNITY_VER 56 // 5.6.4f1
+// #define UNITY_VER 171 // 2017.1.x
+// #define UNITY_VER 172 // 2017.2.x - 2017.4.x
+// #define UNITY_VER 181 // 2018.1.x
+// #define UNITY_VER 182 // 2018.2.x
+// #define UNITY_VER 183 // 2018.3.x - 2018.4.x
+// #define UNITY_VER 191 // 2019.1.x - 2019.2.x
+// #define UNITY_VER 193 // 2019.3.x
+// #define UNITY_VER 194 // 2019.4.x
+// #define UNITY_VER 201 // 2020.1.x
+// #define UNITY_VER 202 // 2020.2.x - 2020.3.19
+// #define UNITY_VER 203 // 2020.3.20+
+// #define UNITY_VER 211 // 2021.1.x
+// #define UNITY_VER 212 // 2021.2.x
+// #define UNITY_VER 213 // 2021.3.x
+// #define UNITY_VER 221 // 2022.1.x
+#define UNITY_VER 222 // 2022.2.x - 2022.3.x
+// #define UNITY_VER 231 // 2023.1.x
+// #define UNITY_VER 232 // 2023.2.x+
+// #define UNITY_VER 233 // 6000.x+
+
+#define UNITY_PATCH_VER 32
+// For special cases
+// Untuk kasus khusus
+
+#if UNITY_VER == 211 && !defined(UNITY_PATCH_VER)
+static_assert(false, "BNM: For Unity 2021.1.x, you must define UNITY_PATCH_VER "
+                     "in GlobalSettings.hpp!");
+#endif
+
+//! Allow to use deprecated methods (if any)
+//! Izinkan penggunaan metode usang (jika ada)
+// #define BNM_DEPRECATED
+
+//! Allow the use of code to synchronize streams
+//! It is recommended to disable it during internal use
+//! Izinkan penggunaan kode untuk menyinkronkan alur
+//! Disarankan untuk menonaktifkannya saat penggunaan internal
+#define BNM_ALLOW_MULTI_THREADING_SYNC
+
+//! For the System.Collections.Generic.Dictionary (Dictionary)
+//! If game uses .NET 3.5 uncomment this define
+//! .NET 3.5 is outdated, but some older games use it
+//! Untuk System.Collections.Generic.Dictionary (Dictionary)
+//! Jika game menggunakan .NET 3.5, hapus komentar pada define ini
+//! .NET 3.5 sudah usang, tetapi beberapa game lama masih menggunakannya
+// #define BNM_DOTNET35
+
+//! Allow code for creating new classes and modifying existing ones
+//! Izinkan kode untuk membuat kelas baru dan memodifikasi yang sudah ada
+#define BNM_CLASSES_MANAGEMENT
+
+//! Enable coroutine creation code. REQUIRES ClassesManagement!
+//! Aktifkan kode pembuatan coroutine. MEMERLUKAN ClassesManagement!
+#define BNM_COROUTINE
+
+//! Disable auto hook via virtual method table in ClassesManagement
+//! Nonaktifkan auto hook melalui tabel metode virtual di ClassesManagement
+// #define BNM_AUTO_HOOK_DISABLE_VIRTUAL_HOOK
+
+//! The good old days...
+//! Masa-masa indah dulu...
+// #define BNM_OLD_GOOD_DAYS
+
+//! Use il2cpp's allocator for Mono arrays instead of basic
+//! Gunakan alokator il2cpp untuk array Mono alih-alih yang dasar
+#define BNM_USE_IL2CPP_ALLOCATOR
+
+//! str() methods in structures
+//! Metode str() dalam struktur
+#define BNM_ALLOW_STR_METHODS
+
+//! Use signal in IsAllocated
+//! Gunakan signal di IsAllocated
+#define BNM_ALLOW_SAFE_IS_ALLOCATED
+
+//! Check mono's objects in their methods
+//! Periksa objek mono dalam metodenya
+#define BNM_ALLOW_SELF_CHECKS
+
+//! Check classes when setting an instance to fields and methods
+//! Periksa kelas saat menyetel instance ke field dan metode
+#define BNM_CHECK_INSTANCE_TYPE
+
+#define BNM_DEBUG
+
+#define BNM_INFO
+
+#define BNM_ERROR
+
+#define BNM_WARNING
+
+#ifndef NDEBUG
+
+#endif
+
+//! Add your string encryptor
+//! Tambahkan pengenkripsi string Anda
+#define BNM_OBFUSCATE(str) str // const char *
+//! Data obfuscated using this macro, can be freed, after BNM loaded. Only for
+//! advanced users! If you don't know what and how, just use your basic macro
+//! here. Data yang dikaburkan menggunakan makro ini dapat dibebaskan setelah
+//! BNM dimuat. Hanya untuk pengguna tingkat lanjut! Jika Anda tidak tahu apa
+//! dan bagaimana, gunakan saja makro dasar Anda di sini.
+#define BNM_OBFUSCATE_TMP(str) str // const char *
+
+//! Choose your hooking software by uncommenting ONE of the following:
+//! Pilih perangkat lunak hooking Anda dengan menghapus komentar pada SALAH SATU
+//! dari berikut ini:
+// #define BNM_USE_DOBBY
+// #define BNM_USE_SHADOWHOOK
+
+#if defined(BNM_USE_DOBBY)
+#include <dobby.h>
+
+template <typename PTR_T, typename NEW_T, typename T_OLD>
+inline void *BasicHook(PTR_T ptr, NEW_T newMethod, T_OLD &oldBytes) {
+  if ((void *)ptr != nullptr)
+    DobbyHook((void *)ptr, (void *)newMethod, (void **)&oldBytes);
+  return (void *)ptr;
+}
+
+template <typename PTR_T, typename NEW_T, typename T_OLD>
+inline void *BasicHook(PTR_T ptr, NEW_T newMethod, T_OLD &&oldBytes) {
+  if ((void *)ptr != nullptr)
+    DobbyHook((void *)ptr, (void *)newMethod, (void **)&oldBytes);
+  return (void *)ptr;
+}
+
+template <typename PTR_T> inline void Unhook(PTR_T ptr) {
+  if ((void *)ptr != nullptr)
+    DobbyDestroy((void *)ptr);
+}
+#elif defined(BNM_USE_SHADOWHOOK)
+#include <shadowhook.h>
+
+template <typename PTR_T, typename NEW_T, typename T_OLD>
+inline void *BasicHook(PTR_T ptr, NEW_T newMethod, T_OLD &oldBytes) {
+  if ((void *)ptr != nullptr)
+    return shadowhook_hook_func_addr((void *)ptr, (void *)newMethod,
+                                     (void **)&oldBytes);
+  return nullptr;
+}
+
+template <typename PTR_T, typename NEW_T, typename T_OLD>
+inline void *BasicHook(PTR_T ptr, NEW_T newMethod, T_OLD &&oldBytes) {
+  if ((void *)ptr != nullptr)
+    return shadowhook_hook_func_addr((void *)ptr, (void *)newMethod,
+                                     (void **)&oldBytes);
+  return nullptr;
+}
+
+template <typename PTR_T> inline void Unhook(PTR_T ptr) {
+  if ((void *)ptr != nullptr)
+    shadowhook_unhook((void *)ptr);
+}
+#else
+// Dummy / Fallback
+template <typename PTR_T, typename NEW_T, typename T_OLD>
+inline void *BasicHook(PTR_T ptr, NEW_T newMethod, T_OLD &oldBytes) {
+  return nullptr;
+}
+
+template <typename PTR_T, typename NEW_T, typename T_OLD>
+inline void *BasicHook(PTR_T ptr, NEW_T newMethod, T_OLD &&oldBytes) {
+  return nullptr;
+}
+
+template <typename PTR_T> inline void Unhook(PTR_T ptr) {}
+#endif
+
+#include <dlfcn.h>
+
+// If you need to hide dlfcn calls or use your dl to load BNM in the game from
+// the outside Jika Anda perlu menyembunyikan panggilan dlfcn atau menggunakan
+// dl Anda untuk memuat BNM di game dari luar
+#define BNM_dlopen dlopen
+#define BNM_dlsym dlsym
+#define BNM_dlclose dlclose
+#define BNM_dladdr dladdr
+
+#include <cstdlib>
+
+// If you need to hide memory management methods
+// Jika Anda perlu menyembunyikan metode manajemen memori
+#define BNM_malloc malloc
+#define BNM_free free
+
+#include <spdlog/fmt/bundled/printf.h>
+#include <spdlog/spdlog.h>
+
+#define BNM_TAG "ByNameModding"
+
+namespace BNM::Internal {
+extern std::shared_ptr<spdlog::logger> bnmLogger;
+static inline spdlog::logger *GetLogger() { return bnmLogger.get(); }
+} // namespace BNM::Internal
+
+#ifdef BNM_ALLOW_SELF_CHECKS
+#define BNM_CHECK_SELF(returnValue)                                            \
+  if (!SelfCheck())                                                            \
+  return returnValue
+#else
+#define BNM_CHECK_SELF(returnValue) ((void)0)
+#endif
+
+// Capture source location for better diagnostics
+#define BNM_LOG_SOURCE                                                         \
+  spdlog::source_loc { __FILE__, __LINE__, __FUNCTION__ }
+
+#ifdef BNM_INFO
+#define BNM_LOG_INFO(...)                                                      \
+  ::BNM::Internal::GetLogger()->log(BNM_LOG_SOURCE, spdlog::level::info,       \
+                                    fmt::sprintf(__VA_ARGS__))
+#else
+#define BNM_LOG_INFO(...) ((void)0)
+#endif
+
+#ifdef BNM_DEBUG
+#define BNM_LOG_DEBUG(...)                                                     \
+  ::BNM::Internal::GetLogger()->log(BNM_LOG_SOURCE, spdlog::level::debug,      \
+                                    fmt::sprintf(__VA_ARGS__))
+#define BNM_LOG_DEBUG_IF(condition, ...)                                       \
+  if (condition)                                                               \
+  BNM_LOG_DEBUG(__VA_ARGS__)
+#else
+#define BNM_LOG_DEBUG(...) ((void)0)
+#define BNM_LOG_DEBUG_IF(...) ((void)0)
+#endif
+
+#ifdef BNM_ERROR
+#define BNM_LOG_ERR(...)                                                       \
+  ::BNM::Internal::GetLogger()->log(BNM_LOG_SOURCE, spdlog::level::err,        \
+                                    fmt::sprintf(__VA_ARGS__))
+#define BNM_LOG_ERR_IF(condition, ...)                                         \
+  if (condition)                                                               \
+  BNM_LOG_ERR(__VA_ARGS__)
+#else
+#define BNM_LOG_ERR(...) ((void)0)
+#define BNM_LOG_ERR_IF(condition, ...) ((void)0)
+#endif
+
+#ifdef BNM_WARNING
+#define BNM_LOG_WARN(...)                                                      \
+  ::BNM::Internal::GetLogger()->log(BNM_LOG_SOURCE, spdlog::level::warn,       \
+                                    fmt::sprintf(__VA_ARGS__))
+#define BNM_LOG_WARN_IF(condition, ...)                                        \
+  if (condition)                                                               \
+  BNM_LOG_WARN(__VA_ARGS__)
+#else
+#define BNM_LOG_WARN(...) ((void)0)
+#define BNM_LOG_WARN_IF(condition, ...) ((void)0)
+#endif
+
+namespace BNM {
+#if defined(__LP64__)
+typedef long BNM_INT_PTR;
+typedef unsigned long BNM_PTR;
+#else
+typedef int BNM_INT_PTR;
+typedef unsigned int BNM_PTR;
+#endif
+} // namespace BNM
+
+#define BNM_VER "2.6.1-beta"
