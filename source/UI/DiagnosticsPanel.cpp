@@ -31,6 +31,21 @@ std::string BaseCachePath() {
     return (base / "Android" / "data" / getprogname() / "cache" / kPROJECT_NAME).string();
 }
 
+void RenderDobbyResult(HookLifecycleManager::State state, int result) {
+    if (state == HookLifecycleManager::State::Pending ||
+        state == HookLifecycleManager::State::InvalidRequest) {
+        ImGui::TextColored(ImVec4(0.95f, 0.65f, 0.25f, 1.0f), "N/A");
+        return;
+    }
+
+    if (result == 0) {
+        ImGui::TextColored(ImVec4(0.35f, 0.95f, 0.45f, 1.0f), "OK (0)");
+        return;
+    }
+
+    ImGui::TextColored(ImVec4(0.95f, 0.35f, 0.35f, 1.0f), "ERR (%d)", result);
+}
+
 void RenderLibraryStatus(const char* label, const XdlLibrary& library) {
     ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(0);
@@ -87,7 +102,7 @@ void RenderHooksTab() {
         ImGui::TableSetupColumn("Owner");
         ImGui::TableSetupColumn("Backend");
         ImGui::TableSetupColumn("State");
-        ImGui::TableSetupColumn("Install");
+        ImGui::TableSetupColumn("Dobby Result");
 #if DIAGNOSTICS_SHOW_POINTERS
         ImGui::TableSetupColumn("Target");
         ImGui::TableSetupColumn("Original");
@@ -114,7 +129,7 @@ void RenderHooksTab() {
                                                : ImVec4(0.95f, 0.65f, 0.25f, 1.0f);
             ImGui::TextColored(stateColor, "%s", std::string{HookLifecycleManager::stateName(hook.state)}.c_str());
             ImGui::TableSetColumnIndex(5);
-            ImGui::Text("%d", hook.installResult);
+            RenderDobbyResult(hook.state, hook.installResult);
 #if DIAGNOSTICS_SHOW_POINTERS
             ImGui::TableSetColumnIndex(6);
             ImGui::Text("%p", hook.target);
