@@ -46,6 +46,13 @@ file(GLOB IMGUI_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/backends/imgui_impl_opengl3.cpp
 )
 
+add_library(imgui STATIC ${IMGUI_SOURCES})
+target_include_directories(imgui PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/backends
+)
+target_link_libraries(imgui PUBLIC android vulkan GLESv3 EGL)
+
 option(USE_KITTYMEMORYEX "Use KittyMemoryEx backend (pvm syscall) instead of KittyMemory (mprotect+memcpy)" ON)
 
 if(USE_KITTYMEMORYEX)
@@ -58,7 +65,6 @@ endif()
 
 set(LIBRARY_SOURCES
     ${COMMON_SOURCES}
-    ${IMGUI_SOURCES}
     ${KITTY_SOURCES}
     ${CMAKE_CURRENT_SOURCE_DIR}/source/PointerHook/trampoline.s
 )
@@ -67,7 +73,6 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/source
     ${CMAKE_CURRENT_SOURCE_DIR}/source/Utils
     ${CMAKE_CURRENT_SOURCE_DIR}/external
-    ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui
     ${CMAKE_CURRENT_SOURCE_DIR}/external/xdl/include
     ${KITTY_INCLUDE_DIR}
 )
@@ -81,6 +86,7 @@ set(LIBS
     EGL
     BNM
     xdl
+    imgui
     ${CMAKE_CURRENT_SOURCE_DIR}/external/Dobby/arm64-v8a/libdobby.a
 )
 
