@@ -11,8 +11,9 @@ endif()
 
 project(AndSwapChainHook C CXX ASM)
 
-set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD 26)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Optimization flags for smaller binary size
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
