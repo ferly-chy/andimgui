@@ -7,9 +7,9 @@
 #include <android/native_window.h>
 #include <atomic>
 #include <cstdint>
-#include <dlfcn.h>
 #include <functional>
 #include <mutex>
+#include <vector>
 
 #ifndef VK_USE_PLATFORM_ANDROID_KHR
 #define VK_USE_PLATFORM_ANDROID_KHR
@@ -17,6 +17,7 @@
 #include <vulkan/vulkan.h>
 
 #include "AndroidPlatform/AndroidPlatform.h"
+#include "Core/ElfScannerManager.h"
 #include "Core/ResourceManager.h"
 #include "Dobby/dobby.h"
 #include "ImGuiExtern/ImGuiSoftKeyboard.h"
@@ -65,6 +66,106 @@ static PFNEGLSWAPBUFFERSWITHDAMAGEKHRPROC g_OrigEglSwapBuffersWithDamage =
 static bool g_GlesInitialized = false;
 static ANativeWindow *g_ImGuiWindow = nullptr;
 static EGLContext g_ImGuiEglContext = EGL_NO_CONTEXT;
+
+static std::function<void()> GetRenderCallbackSnapshot() {
+  std::lock_guard<std::mutex> lk(g_CallbackMutex);
+  return g_RenderCallback;
+}
+
+static void DestroyCurrentImGuiContext(bool shutdownGlesBackend,
+                                       bool shutdownVulkanBackend) {
+  if (!ImGui::GetCurrentContext())
+    return;
+
+  g_ImGuiReady.store(false);
+  if (shutdownVulkanBackend)
+    ImGui_ImplVulkan_Shutdown();
+  if (shutdownGlesBackend)
+    ImGui_ImplOpenGL3_Shutdown();
+  ImGui_ImplAndroid_Shutdown();
+  ResourceManager::GetInstance().reset();
+  ImGui::DestroyContext();
+}
+
+struct GlStateBackup {
+  GLint activeTexture = 0;
+  GLint program = 0;
+  GLint texture2D = 0;
+  GLint sampler = 0;
+  GLint arrayBuffer = 0;
+  GLint vertexArray = 0;
+  GLint framebuffer = 0;
+  GLint viewport[4]{};
+  GLint scissorBox[4]{};
+  GLint blendSrcRgb = 0;
+  GLint blendDstRgb = 0;
+  GLint blendSrcAlpha = 0;
+  GLint blendDstAlpha = 0;
+  GLint blendEquationRgb = 0;
+  GLint blendEquationAlpha = 0;
+  GLboolean blend = GL_FALSE;
+  GLboolean cullFace = GL_FALSE;
+  GLboolean depthTest = GL_FALSE;
+  GLboolean stencilTest = GL_FALSE;
+  GLboolean scissorTest = GL_FALSE;
+  GLboolean colorMask[4]{};
+};
+
+static GlStateBackup BackupGlState() {
+  GlStateBackup state{};
+  glGetIntegerv(GL_ACTIVE_TEXTURE, &state.activeTexture);
+  glActiveTexture(GL_TEXTURE0);
+  glGetIntegerv(GL_CURRENT_PROGRAM, &state.program);
+  glGetIntegerv(GL_TEXTURE_BINDING_2D, &state.texture2D);
+#ifdef GL_SAMPLER_BINDING
+  glGetIntegerv(GL_SAMPLER_BINDING, &state.sampler);
+#endif
+  glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &state.arrayBuffer);
+#ifdef GL_VERTEX_ARRAY_BINDING
+  glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &state.vertexArray);
+#endif
+  glGetIntegerv(GL_FRAMEBUFFER_BINDING, &state.framebuffer);
+  glGetIntegerv(GL_VIEWPORT, state.viewport);
+  glGetIntegerv(GL_SCISSOR_BOX, state.scissorBox);
+  glGetIntegerv(GL_BLEND_SRC_RGB, &state.blendSrcRgb);
+  glGetIntegerv(GL_BLEND_DST_RGB, &state.blendDstRgb);
+  glGetIntegerv(GL_BLEND_SRC_ALPHA, &state.blendSrcAlpha);
+  glGetIntegerv(GL_BLEND_DST_ALPHA, &state.blendDstAlpha);
+  glGetIntegerv(GL_BLEND_EQUATION_RGB, &state.blendEquationRgb);
+  glGetIntegerv(GL_BLEND_EQUATION_ALPHA, &state.blendEquationAlpha);
+  state.blend = glIsEnabled(GL_BLEND);
+  state.cullFace = glIsEnabled(GL_CULL_FACE);
+  state.depthTest = glIsEnabled(GL_DEPTH_TEST);
+  state.stencilTest = glIsEnabled(GL_STENCIL_TEST);
+  state.scissorTest = glIsEnabled(GL_SCISSOR_TEST);
+  glGetBooleanv(GL_COLOR_WRITEMASK, state.colorMask);
+  return state;
+}
+
+static void RestoreGlState(const GlStateBackup& state) {
+  glUseProgram(state.program);
+#ifdef GL_SAMPLER_BINDING
+  glBindSampler(0, state.sampler);
+#endif
+  glActiveTexture(GL_TEXTURE0);
+  glBindTexture(GL_TEXTURE_2D, state.texture2D);
+#ifdef GL_VERTEX_ARRAY_BINDING
+  glBindVertexArray(state.vertexArray);
+#endif
+  glBindBuffer(GL_ARRAY_BUFFER, state.arrayBuffer);
+  glBindFramebuffer(GL_FRAMEBUFFER, state.framebuffer);
+  glViewport(state.viewport[0], state.viewport[1], state.viewport[2], state.viewport[3]);
+  glScissor(state.scissorBox[0], state.scissorBox[1], state.scissorBox[2], state.scissorBox[3]);
+  glBlendEquationSeparate(state.blendEquationRgb, state.blendEquationAlpha);
+  glBlendFuncSeparate(state.blendSrcRgb, state.blendDstRgb, state.blendSrcAlpha, state.blendDstAlpha);
+  if (state.blend) glEnable(GL_BLEND); else glDisable(GL_BLEND);
+  if (state.cullFace) glEnable(GL_CULL_FACE); else glDisable(GL_CULL_FACE);
+  if (state.depthTest) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
+  if (state.stencilTest) glEnable(GL_STENCIL_TEST); else glDisable(GL_STENCIL_TEST);
+  if (state.scissorTest) glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
+  glColorMask(state.colorMask[0], state.colorMask[1], state.colorMask[2], state.colorMask[3]);
+  glActiveTexture(state.activeTexture);
+}
 
 /**
  * @brief 在游戏的 EGL Context 上初始化 ImGui（仅首次调用）
@@ -173,16 +274,30 @@ static bool InitImGuiOnGameContext(EGLDisplay display, EGLSurface surface) {
   ANativeWindow *initWindow = AndroidPlatform::GetNativeWindow();
   if (!initWindow) {
     LOGE("[SwapChainHook] ANativeWindow is null, cannot init ImGui");
+    ResourceManager::GetInstance().reset();
     ImGui::DestroyContext();
     return false;
   }
   ImGui_ImplAndroid_Init(initWindow);
 
   // OpenGL 渲染后端（复用游戏 Context）
-  ImGui_ImplOpenGL3_Init("#version 300 es");
+  if (!ImGui_ImplOpenGL3_Init("#version 300 es")) {
+    LOGE("[SwapChainHook] ImGui_ImplOpenGL3_Init failed");
+    ImGui_ImplAndroid_Shutdown();
+    ResourceManager::GetInstance().reset();
+    ImGui::DestroyContext();
+    return false;
+  }
 
   // 字体
-  ResourceManager::GetInstance().initializeFonts(30.0f);
+  if (!ResourceManager::GetInstance().initializeFonts(30.0f)) {
+    LOGE("[SwapChainHook] Font initialization failed");
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplAndroid_Shutdown();
+    ResourceManager::GetInstance().reset();
+    ImGui::DestroyContext();
+    return false;
+  }
 
   g_GlesInitialized = true;
   g_ImGuiReady.store(true);
@@ -222,17 +337,15 @@ static EGLBoolean Hooked_eglSwapBuffers(EGLDisplay display,
     return g_OrigEglSwapBuffers(display, surface);
 
   // ANativeWindow 变化后需重新初始化 ImGui
-  EGLContext currentCtx = eglGetCurrentContext();
   if (g_GlesInitialized && currentWindow != g_ImGuiWindow) {
     SCH_LOGI("[SwapChainHook] Window changed: %p->%p, reinitializing ImGui",
              g_ImGuiWindow, currentWindow);
     g_ImGuiReady.store(false);
-    ImGui_ImplOpenGL3_Shutdown();
-    ImGui_ImplAndroid_Shutdown();
-    ImGui::DestroyContext();
+    DestroyCurrentImGuiContext(true, false);
     g_GlesInitialized = false;
     g_ImGuiWindow = nullptr;
     g_ImGuiEglContext = EGL_NO_CONTEXT;
+    AndroidPlatform::ResetNativeWindowCache();
     if (!InitImGuiOnGameContext(display, surface))
       return g_OrigEglSwapBuffers(display, surface);
   }
@@ -264,28 +377,14 @@ static EGLBoolean Hooked_eglSwapBuffers(EGLDisplay display,
   ImGui::NewFrame();
   ImGuiSoftKeyboard::PreUpdate();
 
-  if (g_RenderCallback)
-    g_RenderCallback();
+  if (auto callback = GetRenderCallbackSnapshot())
+    callback();
 
   ImGuiSoftKeyboard::Draw();
   ImGui::Render();
 
   // --- 保存游戏的 GL 状态 ---
-  GLint last_program, last_active_texture, last_texture_2d;
-  glGetIntegerv(GL_CURRENT_PROGRAM, &last_program);
-  glGetIntegerv(GL_ACTIVE_TEXTURE, &last_active_texture);
-  glGetIntegerv(GL_TEXTURE_BINDING_2D, &last_texture_2d);
-
-  GLint prevFBO = 0;
-  glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFBO);
-  GLint prevViewport[4];
-  glGetIntegerv(GL_VIEWPORT, prevViewport);
-  GLboolean prevBlend = glIsEnabled(GL_BLEND);
-  GLint prevBlendSrcRGB, prevBlendDstRGB, prevBlendSrcA, prevBlendDstA;
-  glGetIntegerv(GL_BLEND_SRC_RGB, &prevBlendSrcRGB);
-  glGetIntegerv(GL_BLEND_DST_RGB, &prevBlendDstRGB);
-  glGetIntegerv(GL_BLEND_SRC_ALPHA, &prevBlendSrcA);
-  glGetIntegerv(GL_BLEND_DST_ALPHA, &prevBlendDstA);
+  GlStateBackup glState = BackupGlState();
 
   // 渲染到游戏的默认帧缓冲区（FBO 0）
   // 注意：不做 glClear，保留游戏已有画面内容
@@ -304,19 +403,7 @@ static EGLBoolean Hooked_eglSwapBuffers(EGLDisplay display,
   ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
   // --- 恢复游戏的 GL 状态 ---
-  glUseProgram(last_program);
-  glActiveTexture(last_active_texture);
-  glBindTexture(GL_TEXTURE_2D, last_texture_2d);
-
-  glBindFramebuffer(GL_FRAMEBUFFER, prevFBO);
-  glViewport(prevViewport[0], prevViewport[1], prevViewport[2],
-             prevViewport[3]);
-  if (prevBlend)
-    glEnable(GL_BLEND);
-  else
-    glDisable(GL_BLEND);
-  glBlendFuncSeparate(prevBlendSrcRGB, prevBlendDstRGB, prevBlendSrcA,
-                      prevBlendDstA);
+  RestoreGlState(glState);
 
   // --- 调用原始 eglSwapBuffers ---
   return g_OrigEglSwapBuffers(display, surface);
@@ -345,18 +432,16 @@ static EGLBoolean Hooked_eglSwapBuffersWithDamageKHR(EGLDisplay display,
   if (!currentWindow)
     return g_OrigEglSwapBuffersWithDamage(display, surface, rects, n_rects);
 
-  EGLContext currentCtx = eglGetCurrentContext();
   if (g_GlesInitialized && currentWindow != g_ImGuiWindow) {
     SCH_LOGI("[SwapChainHook] WithDamage: Window changed: %p->%p, "
              "reinitializing ImGui",
              g_ImGuiWindow, currentWindow);
     g_ImGuiReady.store(false);
-    ImGui_ImplOpenGL3_Shutdown();
-    ImGui_ImplAndroid_Shutdown();
-    ImGui::DestroyContext();
+    DestroyCurrentImGuiContext(true, false);
     g_GlesInitialized = false;
     g_ImGuiWindow = nullptr;
     g_ImGuiEglContext = EGL_NO_CONTEXT;
+    AndroidPlatform::ResetNativeWindowCache();
     if (!InitImGuiOnGameContext(display, surface))
       return g_OrigEglSwapBuffersWithDamage(display, surface, rects, n_rects);
   }
@@ -382,28 +467,14 @@ static EGLBoolean Hooked_eglSwapBuffersWithDamageKHR(EGLDisplay display,
   ImGui::NewFrame();
   ImGuiSoftKeyboard::PreUpdate();
 
-  if (g_RenderCallback)
-    g_RenderCallback();
+  if (auto callback = GetRenderCallbackSnapshot())
+    callback();
 
   ImGuiSoftKeyboard::Draw();
   ImGui::Render();
 
   // --- 保存游戏的 GL 状态 ---
-  GLint last_program, last_active_texture, last_texture_2d;
-  glGetIntegerv(GL_CURRENT_PROGRAM, &last_program);
-  glGetIntegerv(GL_ACTIVE_TEXTURE, &last_active_texture);
-  glGetIntegerv(GL_TEXTURE_BINDING_2D, &last_texture_2d);
-
-  GLint prevFBO = 0;
-  glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFBO);
-  GLint prevViewport[4];
-  glGetIntegerv(GL_VIEWPORT, prevViewport);
-  GLboolean prevBlend = glIsEnabled(GL_BLEND);
-  GLint prevBlendSrcRGB, prevBlendDstRGB, prevBlendSrcA, prevBlendDstA;
-  glGetIntegerv(GL_BLEND_SRC_RGB, &prevBlendSrcRGB);
-  glGetIntegerv(GL_BLEND_DST_RGB, &prevBlendDstRGB);
-  glGetIntegerv(GL_BLEND_SRC_ALPHA, &prevBlendSrcA);
-  glGetIntegerv(GL_BLEND_DST_ALPHA, &prevBlendDstA);
+  GlStateBackup glState = BackupGlState();
 
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
@@ -418,19 +489,7 @@ static EGLBoolean Hooked_eglSwapBuffersWithDamageKHR(EGLDisplay display,
   ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
   // --- 恢复游戏的 GL 状态 ---
-  glUseProgram(last_program);
-  glActiveTexture(last_active_texture);
-  glBindTexture(GL_TEXTURE_2D, last_texture_2d);
-
-  glBindFramebuffer(GL_FRAMEBUFFER, prevFBO);
-  glViewport(prevViewport[0], prevViewport[1], prevViewport[2],
-             prevViewport[3]);
-  if (prevBlend)
-    glEnable(GL_BLEND);
-  else
-    glDisable(GL_BLEND);
-  glBlendFuncSeparate(prevBlendSrcRGB, prevBlendDstRGB, prevBlendSrcA,
-                      prevBlendDstA);
+  RestoreGlState(glState);
 
   return g_OrigEglSwapBuffersWithDamage(display, surface, rects, n_rects);
 }
@@ -468,6 +527,7 @@ static std::vector<VkImageView> g_VkSwapImageViews;
 static std::vector<VkFramebuffer> g_VkFramebuffers;
 static std::vector<VkCommandBuffer> g_VkCommandBuffers;
 static std::vector<VkFence> g_VkFences;
+static std::vector<VkSemaphore> g_VkRenderCompleteSemaphores;
 
 static VkFormat g_VkSwapFormat = VK_FORMAT_UNDEFINED;
 static VkExtent2D g_VkSwapExtent = {}; // 交换链实际尺寸（可能是竖屏）
@@ -569,6 +629,11 @@ static void CleanupVkResources() {
   if (g_VkInitialized)
     ImGui_ImplVulkan_Shutdown();
 
+  for (auto semaphore : g_VkRenderCompleteSemaphores)
+    if (semaphore)
+      vkDestroySemaphore(g_VkDevice, semaphore, nullptr);
+  g_VkRenderCompleteSemaphores.clear();
+
   for (auto f : g_VkFences)
     if (f)
       vkDestroyFence(g_VkDevice, f, nullptr);
@@ -621,7 +686,7 @@ static bool CreateVkImGuiResources() {
   attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
   attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
   attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-  attachment.initialLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+  attachment.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
   attachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 
   VkAttachmentReference colorRef{};
@@ -730,6 +795,17 @@ static bool CreateVkImGuiResources() {
     if (vkCreateFence(g_VkDevice, &fenceInfo, nullptr, &g_VkFences[i]) !=
         VK_SUCCESS) {
       LOGE("[SwapChainHook/Vk] vkCreateFence[%u] failed", i);
+      return false;
+    }
+  }
+
+  g_VkRenderCompleteSemaphores.resize(imageCount);
+  VkSemaphoreCreateInfo semaphoreInfo{};
+  semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+  for (uint32_t i = 0; i < imageCount; i++) {
+    if (vkCreateSemaphore(g_VkDevice, &semaphoreInfo, nullptr,
+                          &g_VkRenderCompleteSemaphores[i]) != VK_SUCCESS) {
+      LOGE("[SwapChainHook/Vk] vkCreateSemaphore[%u] failed", i);
       return false;
     }
   }
@@ -853,6 +929,7 @@ static bool InitImGuiVulkan() {
   ANativeWindow *vkWindow = AndroidPlatform::GetNativeWindow();
   if (!vkWindow) {
     LOGE("[SwapChainHook/Vk] ANativeWindow is null, cannot init ImGui");
+    ResourceManager::GetInstance().reset();
     ImGui::DestroyContext();
     return false;
   }
@@ -877,11 +954,21 @@ static bool InitImGuiVulkan() {
 
   if (!ImGui_ImplVulkan_Init(&initInfo)) {
     LOGE("[SwapChainHook/Vk] ImGui_ImplVulkan_Init failed");
+    ImGui_ImplAndroid_Shutdown();
+    ResourceManager::GetInstance().reset();
+    ImGui::DestroyContext();
     return false;
   }
 
   // 字体
-  ResourceManager::GetInstance().initializeFonts(30.0f);
+  if (!ResourceManager::GetInstance().initializeFonts(30.0f)) {
+    LOGE("[SwapChainHook/Vk] Font initialization failed");
+    ImGui_ImplVulkan_Shutdown();
+    ImGui_ImplAndroid_Shutdown();
+    ResourceManager::GetInstance().reset();
+    ImGui::DestroyContext();
+    return false;
+  }
 
   // 对外报告横屏尺寸
   g_Width = (int)displayW;
@@ -912,9 +999,25 @@ static VkResult VKAPI_CALL Hooked_vkCreateDevice(
     g_VkPhysDev = physicalDevice;
     g_VkDevice = *pDevice;
 
-    // 从 DeviceCreateInfo 获取图形队列族索引
+    // 从 DeviceCreateInfo 获取可用图形队列族索引
+    g_VkQueueFamily = UINT32_MAX;
     if (pCreateInfo && pCreateInfo->queueCreateInfoCount > 0) {
-      g_VkQueueFamily = pCreateInfo->pQueueCreateInfos[0].queueFamilyIndex;
+      uint32_t qfCount = 0;
+      vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &qfCount, nullptr);
+      std::vector<VkQueueFamilyProperties> qfProps(qfCount);
+      if (qfCount > 0)
+        vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &qfCount, qfProps.data());
+
+      for (uint32_t i = 0; i < pCreateInfo->queueCreateInfoCount; ++i) {
+        uint32_t family = pCreateInfo->pQueueCreateInfos[i].queueFamilyIndex;
+        if (family < qfProps.size() && (qfProps[family].queueFlags & VK_QUEUE_GRAPHICS_BIT)) {
+          g_VkQueueFamily = family;
+          break;
+        }
+      }
+
+      if (g_VkQueueFamily == UINT32_MAX)
+        g_VkQueueFamily = pCreateInfo->pQueueCreateInfos[0].queueFamilyIndex;
     }
 
     SCH_LOGI(
@@ -948,18 +1051,16 @@ static VkResult VKAPI_CALL Hooked_vkCreateSwapchainKHR(
   // 先清理旧资源（交换链重建时，或 EGL→Vulkan 切换时）
   if (g_VkInitialized) {
     CleanupVkResources();
-    ImGui_ImplAndroid_Shutdown();
-    ImGui::DestroyContext();
+    DestroyCurrentImGuiContext(false, false);
   } else if (g_GlesInitialized) {
     // 游戏从 EGL 切换到 Vulkan，先清理 EGL ImGui
     SCH_LOGI("[SwapChainHook/Vk] EGL→Vulkan transition, cleaning up EGL ImGui");
     g_ImGuiReady.store(false);
-    ImGui_ImplOpenGL3_Shutdown();
-    ImGui_ImplAndroid_Shutdown();
-    ImGui::DestroyContext();
+    DestroyCurrentImGuiContext(true, false);
     g_GlesInitialized = false;
     g_ImGuiWindow = nullptr;
     g_ImGuiEglContext = EGL_NO_CONTEXT;
+    AndroidPlatform::ResetNativeWindowCache();
   }
 
   VkResult result =
@@ -1000,8 +1101,7 @@ Hooked_vkDestroySwapchainKHR(VkDevice device, VkSwapchainKHR swapchain,
                              const VkAllocationCallbacks *pAllocator) {
   if (swapchain == g_VkSwapchain && g_VkInitialized) {
     CleanupVkResources();
-    ImGui_ImplAndroid_Shutdown();
-    ImGui::DestroyContext();
+    DestroyCurrentImGuiContext(false, false);
     g_ImGuiReady.store(false);
   }
   g_OrigVkDestroySwapchain(device, swapchain, pAllocator);
@@ -1014,10 +1114,7 @@ static void VKAPI_CALL Hooked_vkDestroyDevice(
     VkDevice device, const VkAllocationCallbacks *pAllocator) {
   if (device == g_VkDevice) {
     CleanupVkResources();
-    if (ImGui::GetCurrentContext()) {
-      ImGui_ImplAndroid_Shutdown();
-      ImGui::DestroyContext();
-    }
+    DestroyCurrentImGuiContext(false, false);
     g_ImGuiReady.store(false);
     g_VkDevice = VK_NULL_HANDLE;
     g_VkQueue = VK_NULL_HANDLE;
@@ -1048,7 +1145,8 @@ Hooked_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
       continue;
 
     uint32_t imageIndex = pPresentInfo->pImageIndices[sc];
-    if (imageIndex >= g_VkCommandBuffers.size())
+    if (imageIndex >= g_VkCommandBuffers.size() ||
+        imageIndex >= g_VkRenderCompleteSemaphores.size())
       continue;
 
     // 等待上一次使用该命令缓冲的 GPU 工作完成
@@ -1069,8 +1167,8 @@ Hooked_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
     ImGui::NewFrame();
     ImGuiSoftKeyboard::PreUpdate();
 
-    if (g_RenderCallback)
-      g_RenderCallback();
+    if (auto callback = GetRenderCallbackSnapshot())
+      callback();
 
     ImGuiSoftKeyboard::Draw();
 
@@ -1108,20 +1206,27 @@ Hooked_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &cmd;
+    VkSemaphore renderComplete = g_VkRenderCompleteSemaphores[imageIndex];
+    submitInfo.signalSemaphoreCount = 1;
+    submitInfo.pSignalSemaphores = &renderComplete;
 
-    // 如果游戏有 wait semaphore，我们也等待它
-    // 这确保游戏渲染完成后再叠加 ImGui
     if (pPresentInfo->waitSemaphoreCount > 0 && pPresentInfo->pWaitSemaphores) {
       submitInfo.waitSemaphoreCount = pPresentInfo->waitSemaphoreCount;
       submitInfo.pWaitSemaphores = pPresentInfo->pWaitSemaphores;
-      // 为每个 wait semaphore 提供一个 wait stage
       std::vector<VkPipelineStageFlags> waitStages(
           pPresentInfo->waitSemaphoreCount, waitStage);
       submitInfo.pWaitDstStageMask = waitStages.data();
+    }
 
-      vkQueueSubmit(queue, 1, &submitInfo, g_VkFences[imageIndex]);
+    VkResult submitResult = vkQueueSubmit(queue, 1, &submitInfo, g_VkFences[imageIndex]);
+    if (submitResult != VK_SUCCESS) {
+      LOGE("[SwapChainHook/Vk] vkQueueSubmit failed: %d", (int)submitResult);
+      vkResetFences(g_VkDevice, 1, &g_VkFences[imageIndex]);
     } else {
-      vkQueueSubmit(queue, 1, &submitInfo, g_VkFences[imageIndex]);
+      VkPresentInfoKHR patchedPresent = *pPresentInfo;
+      patchedPresent.waitSemaphoreCount = 1;
+      patchedPresent.pWaitSemaphores = &renderComplete;
+      return g_OrigVkQueuePresent(queue, &patchedPresent);
     }
 
     break; // 仅处理第一个匹配的交换链
@@ -1276,24 +1381,30 @@ void Install() {
 
   // === EGL hooks ===
   {
-    void *libEGL = dlopen("libEGL.so", RTLD_NOW | RTLD_NOLOAD);
-    if (libEGL) {
-      void *sym = dlsym(libEGL, "eglSwapBuffers");
-      if (sym) {
-        DobbyHook(sym, (void *)Hooked_eglSwapBuffers,
-                  (void **)&g_OrigEglSwapBuffers);
-        SCH_LOGI("[SwapChainHook] eglSwapBuffers hooked at %p", sym);
+    if (!Elf.egl().isValid())
+      Elf.scanAsync({"libEGL.so"});
+
+    void *sym = Elf.egl().findSymbol("eglSwapBuffers");
+    if (sym) {
+      int ret = DobbyHook(sym, (void *)Hooked_eglSwapBuffers,
+                          (void **)&g_OrigEglSwapBuffers);
+      SCH_LOGI("[SwapChainHook] DobbyHook(eglSwapBuffers)=%d target=%p", ret, sym);
+      if (ret == 0) {
+        std::lock_guard<std::mutex> lk(g_HookedAddrsMutex);
+        g_DobbyHookedAddrs.push_back(sym);
       }
-      void *symDmg = dlsym(libEGL, "eglSwapBuffersWithDamageKHR");
-      if (!symDmg)
-        symDmg = (void *)eglGetProcAddress("eglSwapBuffersWithDamageKHR");
-      if (symDmg) {
-        DobbyHook(symDmg, (void *)Hooked_eglSwapBuffersWithDamageKHR,
-                  (void **)&g_OrigEglSwapBuffersWithDamage);
-        SCH_LOGI("[SwapChainHook] eglSwapBuffersWithDamageKHR hooked at %p",
-                 symDmg);
+    }
+
+    void *symDmg = Elf.egl().findSymbol("eglSwapBuffersWithDamageKHR");
+    if (symDmg) {
+      int ret = DobbyHook(symDmg, (void *)Hooked_eglSwapBuffersWithDamageKHR,
+                          (void **)&g_OrigEglSwapBuffersWithDamage);
+      SCH_LOGI("[SwapChainHook] DobbyHook(eglSwapBuffersWithDamageKHR)=%d target=%p", ret,
+               symDmg);
+      if (ret == 0) {
+        std::lock_guard<std::mutex> lk(g_HookedAddrsMutex);
+        g_DobbyHookedAddrs.push_back(symDmg);
       }
-      dlclose(libEGL);
     }
   }
 
@@ -1321,12 +1432,8 @@ void Uninstall() {
   if (g_VkInitialized)
     CleanupVkResources();
 
-  if (ImGui::GetCurrentContext()) {
-    if (g_GlesInitialized)
-      ImGui_ImplOpenGL3_Shutdown();
-    ImGui_ImplAndroid_Shutdown();
-    ImGui::DestroyContext();
-  }
+  DestroyCurrentImGuiContext(g_GlesInitialized, false);
+  AndroidPlatform::ResetNativeWindowCache();
 
   g_GlesInitialized = false;
   g_VkInitialized = false;

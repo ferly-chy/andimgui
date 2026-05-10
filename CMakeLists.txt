@@ -24,6 +24,9 @@ endif()
 add_subdirectory(external/BNM)
 target_include_directories(BNM PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/external/Dobby")
 
+# xDL enhanced Android dynamic linker helpers
+add_subdirectory(external/xdl)
+
 file(GLOB_RECURSE COMMON_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/source/*.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/source/*.c
@@ -65,6 +68,7 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/source/Utils
     ${CMAKE_CURRENT_SOURCE_DIR}/external
     ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/xdl/include
     ${KITTY_INCLUDE_DIR}
 )
 
@@ -76,6 +80,7 @@ set(LIBS
     GLESv3
     EGL
     BNM
+    xdl
     ${CMAKE_CURRENT_SOURCE_DIR}/external/Dobby/arm64-v8a/libdobby.a
 )
 

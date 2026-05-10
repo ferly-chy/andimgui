@@ -87,10 +87,10 @@ static void InitBNM() {
        */
       BNM::Loading::SetMethodFinder(
           [](const char *name, void *userData) -> void * {
-            auto elf = static_cast<ElfScanner *>(userData);
-            if (!elf)
+            auto library = static_cast<XdlLibrary *>(userData);
+            if (!library)
               return nullptr;
-            return reinterpret_cast<void *>(elf->findSymbol(name));
+            return library->findSymbol(name);
           },
           &scanner);
 
@@ -117,8 +117,6 @@ static void InitBNM() {
  */
 void main_thread() {
   CrashHandler::Install();
-
-  KT::Init();
 
   if (!Elf.scanAsync({
           //"libc.so",

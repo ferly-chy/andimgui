@@ -7,6 +7,10 @@ struct android_app *g_App = nullptr;
 
 JavaVM* g_JavaVM = nullptr; /// deprecated, use AndroidPlatform::GetJavaVM() instead
 
+namespace {
+ANativeWindow* g_CachedWindow = nullptr;
+}
+
 namespace AndroidPlatform {
 
 /**
@@ -336,12 +340,31 @@ ANativeWindow* GetNativeWindow()
     if (g_App && g_App->window)
         return g_App->window;
 
-    static ANativeWindow* s_cachedWindow = nullptr;
-    if (s_cachedWindow)
-        return s_cachedWindow;
+    auto isUsableWindow = [](ANativeWindow* window) -> bool {
+        return window && ANativeWindow_getWidth(window) > 0 && ANativeWindow_getHeight(window) > 0;
+    };
 
-    s_cachedWindow = FindNativeWindowViaJNI();
-    return s_cachedWindow;
+    if (isUsableWindow(g_CachedWindow))
+        return g_CachedWindow;
+
+    if (g_CachedWindow)
+    {
+        LOGW("[AndroidPlatform] GetNativeWindow: releasing stale cached window=%p", g_CachedWindow);
+        ANativeWindow_release(g_CachedWindow);
+        g_CachedWindow = nullptr;
+    }
+
+    g_CachedWindow = FindNativeWindowViaJNI();
+    return g_CachedWindow;
+}
+
+void ResetNativeWindowCache()
+{
+    if (g_CachedWindow)
+    {
+        ANativeWindow_release(g_CachedWindow);
+        g_CachedWindow = nullptr;
+    }
 }
 
 }

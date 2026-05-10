@@ -14,7 +14,10 @@ public:
     
     // 初始化字体资源
     bool initializeFonts(float fontSize);
-    
+
+    // 重置当前 ImGui context 关联的字体指针
+    void reset();
+
     // 获取字体
     ImFont* getCurrentFont() const { return m_CurrentFont; }
     

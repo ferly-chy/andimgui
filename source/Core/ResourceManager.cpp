@@ -11,6 +11,10 @@ ResourceManager& ResourceManager::GetInstance() {
     return instance;
 }
 
+void ResourceManager::reset() {
+    m_CurrentFont = nullptr;
+}
+
 std::string ResourceManager::findSystemChineseFont() {
     const std::vector<std::string> fontDirs = {
         "/system/fonts",
@@ -87,6 +91,7 @@ std::string ResourceManager::findSystemChineseFont() {
 }
 
 bool ResourceManager::initializeFonts(float fontSize) {
+    m_CurrentFont = nullptr;
     ImGuiIO& io = ImGui::GetIO();
 
     // 尝试从系统目录加载中文字体
@@ -114,16 +119,16 @@ bool ResourceManager::initializeFonts(float fontSize) {
         }
     }
     
-    // 如果系统字体加载失败，尝试使用内嵌字体作为备用
+    // 如果系统字体加载失败，使用 ImGui 默认字体作为最终兜底
     if (!m_CurrentFont) {
-        FLOGW("Falling back to embedded font");
-        // m_CurrentFont = io.Fonts->AddFontFromMemoryCompressedBase85TTF(Consolas_compressed_data_base85, 20.0f);
-        // m_CurrentFont = io.Fonts->AddFontFromMemoryCompressedBase85TTF(SourceHanSansHWSC_VF_compressed_data_base85, 30.0f, nullptr, io.Fonts->GetGlyphRangesChineseFull());
-        // m_CurrentFont = io.Fonts->AddFontFromMemoryCompressedBase85TTF(MiSansVF_compressed_data_base85, 27.0f, nullptr, io.Fonts->GetGlyphRangesChineseFull());
-        // m_CurrentFont = io.Fonts->AddFontFromMemoryCompressedBase85TTF(LXGWWenKaiMonoRegular_compressed_data_base85, 25.0f, nullptr, io.Fonts->GetGlyphRangesChineseFull());
+        FLOGW("Falling back to ImGui default font");
+        m_CurrentFont = io.Fonts->AddFontDefault();
     }
-    
-    IM_ASSERT(m_CurrentFont != nullptr);
 
-    return m_CurrentFont != nullptr;
+    if (!m_CurrentFont) {
+        FLOGE("Failed to initialize any ImGui font");
+        return false;
+    }
+
+    return true;
 }

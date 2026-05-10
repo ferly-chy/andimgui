@@ -25,4 +25,6 @@ ANativeWindow* FindNativeWindowViaJNI();
 
 ANativeWindow* GetNativeWindow();
 
+void ResetNativeWindowCache();
+
 }

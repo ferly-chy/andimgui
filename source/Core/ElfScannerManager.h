@@ -1,15 +1,14 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <set>
 #include <string>
 #include <string_view>
 
-#include "Utils/KittyEx.h"
-
 // ============================================================
-//  X-macro 库注册表 — 新增库只需在此添加一行
-//  格式: ELF_LIB_ENTRY(枚举名, 访问方法名, "完整so文件名")
+//  X-macro library registry — add new target libraries here.
+//  Format: ELF_LIB_ENTRY(enum, accessor, "full_so_name")
 // ============================================================
 #define ELF_LIB_LIST                                                    \
     ELF_LIB_ENTRY(C,               c,               "libc.so")               \
@@ -24,11 +23,35 @@
     ELF_LIB_ENTRY(ART,             art,             "libart.so")             \
     ELF_LIB_ENTRY(ANDROID_RUNTIME, android_runtime, "libandroid_runtime.so") \
     ELF_LIB_ENTRY(GODOT,           godot,           "libgodot_android.so")   \
-    ELF_LIB_ENTRY(SEC2026,         sec2026,         "libsec2026.so")
+    ELF_LIB_ENTRY(SEC2026,         sec2026,         "libsec2026.so")         \
+    ELF_LIB_ENTRY(EGL,             egl,             "libEGL.so")
+
+class XdlLibrary {
+public:
+    XdlLibrary() = default;
+    ~XdlLibrary();
+
+    XdlLibrary(const XdlLibrary&) = delete;
+    XdlLibrary& operator=(const XdlLibrary&) = delete;
+
+    XdlLibrary(XdlLibrary&& other) noexcept;
+    XdlLibrary& operator=(XdlLibrary&& other) noexcept;
+
+    bool open(std::string libraryName);
+    bool isValid() const { return m_handle != nullptr; }
+    void* findSymbol(const char* symbol, size_t* symbolSize = nullptr) const;
+    uintptr_t base() const { return m_base; }
+    const std::string& name() const { return m_name; }
+    void close();
+
+private:
+    std::string m_name;
+    void* m_handle = nullptr;
+    uintptr_t m_base = 0;
+};
 
 class ElfScannerManager {
 public:
-    // 由 X-macro 自动生成枚举
     enum Lib : int {
 #define ELF_LIB_ENTRY(ENUM, FUNC, SO) LIB_##ENUM,
         ELF_LIB_LIST
@@ -44,16 +67,10 @@ public:
     ElfScannerManager(const ElfScannerManager&) = delete;
     ElfScannerManager& operator=(const ElfScannerManager&) = delete;
 
-    /**
-     * 异步批量扫描多个库
-     * @param libraries 库名称列表（如 "libc.so", "libUE4.so"）
-     * @return 是否全部成功扫描
-     */
     bool scanAsync(const std::set<std::string>& libraries);
 
-    // 由 X-macro 自动生成访问方法（O(1) 数组索引，无锁）
 #define ELF_LIB_ENTRY(ENUM, FUNC, SO) \
-    ElfScanner& FUNC() { return m_scanners[LIB_##ENUM]; }
+    XdlLibrary& FUNC() { return m_libraries[LIB_##ENUM]; }
     ELF_LIB_LIST
 #undef ELF_LIB_ENTRY
 
@@ -63,8 +80,7 @@ private:
 
     static int libNameToIndex(std::string_view libraryName);
 
-    std::array<ElfScanner, LIB_COUNT> m_scanners{};
+    std::array<XdlLibrary, LIB_COUNT> m_libraries{};
 };
 
-// 全局访问别名
 inline ElfScannerManager& Elf = ElfScannerManager::GetInstance();

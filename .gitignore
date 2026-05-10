@@ -10,3 +10,6 @@ cmake-build-release-system/
 .claude/
 .gemini
 docs/
+QWEN.md
+GEMINI.md
+
