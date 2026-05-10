@@ -7,7 +7,7 @@
 #include <cstdint>
 
 #include "Core/ElfScannerManager.h"
-#include "Dobby/dobby.h"
+#include "Core/HookLifecycleManager.h"
 #include "Utils/Logger.h"
 
 namespace {
@@ -58,9 +58,12 @@ namespace InputEventHook
             return;
         }
 
-        int ret = DobbyHook(symbol, reinterpret_cast<void*>(Fake_consume), reinterpret_cast<void**>(&Orig_consume));
-        if (ret != 0 || !Orig_consume) {
-            LOGE("[InputEventHook] DobbyHook failed: ret=%d symbol=%s addr=%p", ret, resolvedName, symbol);
+        if (!HookLifecycleManager::GetInstance().install("android::InputConsumer::consume",
+                                                         symbol,
+                                                         reinterpret_cast<void*>(Fake_consume),
+                                                         reinterpret_cast<void**>(&Orig_consume),
+                                                         "InputEvent")) {
+            LOGE("[InputEventHook] Hook install failed: symbol=%s addr=%p", resolvedName, symbol);
             Orig_consume = nullptr;
             return;
         }

@@ -81,10 +81,13 @@ void RenderHooksTab() {
     ImGui::Text("Installed hooks: %zu / %zu", HookLifecycleManager::GetInstance().installedCount(), hooks.size());
     ImGui::Separator();
 
-    if (ImGui::BeginTable("hook_lifecycle", DIAGNOSTICS_SHOW_POINTERS ? 5 : 3, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable)) {
+    if (ImGui::BeginTable("hook_lifecycle", DIAGNOSTICS_SHOW_POINTERS ? 8 : 6, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable)) {
+        ImGui::TableSetupColumn("#");
         ImGui::TableSetupColumn("Name");
+        ImGui::TableSetupColumn("Owner");
+        ImGui::TableSetupColumn("Backend");
         ImGui::TableSetupColumn("State");
-        ImGui::TableSetupColumn("Result");
+        ImGui::TableSetupColumn("Install");
 #if DIAGNOSTICS_SHOW_POINTERS
         ImGui::TableSetupColumn("Target");
         ImGui::TableSetupColumn("Original");
@@ -94,17 +97,28 @@ void RenderHooksTab() {
         for (const auto& hook : hooks) {
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
-            ImGui::TextUnformatted(std::string{hook.name}.c_str());
+            ImGui::Text("%llu", static_cast<unsigned long long>(hook.sequence));
             ImGui::TableSetColumnIndex(1);
-            ImGui::TextColored(hook.installed ? ImVec4(0.35f, 0.95f, 0.45f, 1.0f)
-                                              : ImVec4(0.95f, 0.55f, 0.25f, 1.0f),
-                               "%s", hook.installed ? "installed" : "failed/off");
+            ImGui::TextUnformatted(hook.name.c_str());
             ImGui::TableSetColumnIndex(2);
-            ImGui::Text("%d", hook.result);
-#if DIAGNOSTICS_SHOW_POINTERS
+            ImGui::TextUnformatted(hook.owner.c_str());
             ImGui::TableSetColumnIndex(3);
-            ImGui::Text("%p", hook.target);
+            ImGui::TextUnformatted(std::string{HookLifecycleManager::backendName(hook.backend)}.c_str());
             ImGui::TableSetColumnIndex(4);
+            const bool installed = hook.state == HookLifecycleManager::State::Installed;
+            const bool failed = hook.state == HookLifecycleManager::State::Failed ||
+                                hook.state == HookLifecycleManager::State::InvalidRequest ||
+                                hook.state == HookLifecycleManager::State::DestroyFailed;
+            const ImVec4 stateColor = installed ? ImVec4(0.35f, 0.95f, 0.45f, 1.0f)
+                                      : failed ? ImVec4(0.95f, 0.35f, 0.35f, 1.0f)
+                                               : ImVec4(0.95f, 0.65f, 0.25f, 1.0f);
+            ImGui::TextColored(stateColor, "%s", std::string{HookLifecycleManager::stateName(hook.state)}.c_str());
+            ImGui::TableSetColumnIndex(5);
+            ImGui::Text("%d", hook.installResult);
+#if DIAGNOSTICS_SHOW_POINTERS
+            ImGui::TableSetColumnIndex(6);
+            ImGui::Text("%p", hook.target);
+            ImGui::TableSetColumnIndex(7);
             ImGui::Text("%p", hook.original ? *hook.original : nullptr);
 #endif
         }

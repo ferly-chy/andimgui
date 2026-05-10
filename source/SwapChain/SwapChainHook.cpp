@@ -1331,7 +1331,7 @@ void Install() {
     for (auto &h : devHooks) {
       void *target = (void *)vkGetDeviceProcAddr(helperDev, h.name);
       if (target) {
-        if (!HookLifecycleManager::GetInstance().install(h.name, target, h.hookFunc, h.origSlot))
+        if (!HookLifecycleManager::GetInstance().install(h.name, target, h.hookFunc, h.origSlot, "SwapChain"))
           LOGE("[SwapChainHook] Failed to install hook: %s", h.name);
       } else {
         LOGE("[SwapChainHook] %s: vkGetDeviceProcAddr returned null", h.name);
@@ -1345,7 +1345,7 @@ void Install() {
       if (target) {
         if (!HookLifecycleManager::GetInstance().install(
             "vkCreateDevice", target, (void *)Hooked_vkCreateDevice,
-            (void **)&g_OrigVkCreateDevice))
+            (void **)&g_OrigVkCreateDevice, "SwapChain"))
           LOGE("[SwapChainHook] Failed to install hook: vkCreateDevice");
       }
     }
@@ -1375,7 +1375,7 @@ void Install() {
     if (sym) {
       if (!HookLifecycleManager::GetInstance().install(
           "eglSwapBuffers", sym, (void *)Hooked_eglSwapBuffers,
-          (void **)&g_OrigEglSwapBuffers))
+          (void **)&g_OrigEglSwapBuffers, "SwapChain"))
         LOGE("[SwapChainHook] Failed to install hook: eglSwapBuffers");
     }
 
@@ -1384,7 +1384,7 @@ void Install() {
       if (!HookLifecycleManager::GetInstance().install(
           "eglSwapBuffersWithDamageKHR", symDmg,
           (void *)Hooked_eglSwapBuffersWithDamageKHR,
-          (void **)&g_OrigEglSwapBuffersWithDamage))
+          (void **)&g_OrigEglSwapBuffersWithDamage, "SwapChain"))
         LOGE("[SwapChainHook] Failed to install hook: eglSwapBuffersWithDamageKHR");
     }
   }
@@ -1398,8 +1398,7 @@ void Uninstall() {
 
   SCH_LOGI("[SwapChainHook] Uninstalling...");
 
-  HookLifecycleManager::GetInstance().uninstallAll();
-  HookLifecycleManager::GetInstance().clear();
+  HookLifecycleManager::GetInstance().uninstallByOwner("SwapChain");
 
   g_OrigEglSwapBuffers = nullptr;
   g_OrigEglSwapBuffersWithDamage = nullptr;
