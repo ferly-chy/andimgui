@@ -6,6 +6,3 @@
 	path = external/KittyMemory
 	url = https://github.com/MJx0/KittyMemory.git
 	branch = master
-[submodule "external/BNM"]
-	path = external/BNM
-	url = https://github.com/yiixianx-ux/BNM.git
