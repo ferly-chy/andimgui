@@ -18,6 +18,7 @@
 
 #include "AndroidPlatform/AndroidPlatform.h"
 #include "Core/ElfScannerManager.h"
+#include "Core/HookLifecycleManager.h"
 #include "Core/ResourceManager.h"
 #include "Dobby/dobby.h"
 #include "ImGuiExtern/ImGuiSoftKeyboard.h"
@@ -505,10 +506,6 @@ static PFN_vkDestroyDevice g_OrigVkDestroyDevice = nullptr;
 static PFN_vkGetDeviceQueue g_OrigVkGetDeviceQueue = nullptr;
 static PFN_vkCreateSwapchainKHR g_OrigVkCreateSwapchain = nullptr;
 static PFN_vkDestroySwapchainKHR g_OrigVkDestroySwapchain = nullptr;
-
-// 记录所有通过 DobbyHook 安装的地址，用于 Uninstall 时 DobbyDestroy
-static std::mutex g_HookedAddrsMutex;
-static std::vector<void *> g_DobbyHookedAddrs;
 
 // 捕获的 Vulkan 对象
 static VkPhysicalDevice g_VkPhysDev = VK_NULL_HANDLE;
@@ -1334,13 +1331,8 @@ void Install() {
     for (auto &h : devHooks) {
       void *target = (void *)vkGetDeviceProcAddr(helperDev, h.name);
       if (target) {
-        int ret = DobbyHook(target, h.hookFunc, h.origSlot);
-        SCH_LOGI("[SwapChainHook] DobbyHook(%s)=%d  target=%p  orig=%p", h.name,
-                 ret, target, *(h.origSlot));
-        if (ret == 0) {
-          std::lock_guard<std::mutex> lk(g_HookedAddrsMutex);
-          g_DobbyHookedAddrs.push_back(target);
-        }
+        if (!HookLifecycleManager::GetInstance().install(h.name, target, h.hookFunc, h.origSlot))
+          LOGE("[SwapChainHook] Failed to install hook: %s", h.name);
       } else {
         LOGE("[SwapChainHook] %s: vkGetDeviceProcAddr returned null", h.name);
       }
@@ -1351,15 +1343,10 @@ void Install() {
       void *target =
           (void *)vkGetInstanceProcAddr(helperInst, "vkCreateDevice");
       if (target) {
-        int ret = DobbyHook(target, (void *)Hooked_vkCreateDevice,
-                            (void **)&g_OrigVkCreateDevice);
-        SCH_LOGI(
-            "[SwapChainHook] DobbyHook(vkCreateDevice)=%d  target=%p  orig=%p",
-            ret, target, g_OrigVkCreateDevice);
-        if (ret == 0) {
-          std::lock_guard<std::mutex> lk(g_HookedAddrsMutex);
-          g_DobbyHookedAddrs.push_back(target);
-        }
+        if (!HookLifecycleManager::GetInstance().install(
+            "vkCreateDevice", target, (void *)Hooked_vkCreateDevice,
+            (void **)&g_OrigVkCreateDevice))
+          LOGE("[SwapChainHook] Failed to install hook: vkCreateDevice");
       }
     }
   } else {
@@ -1381,30 +1368,24 @@ void Install() {
 
   // === EGL hooks ===
   {
-    if (!Elf.egl().isValid())
-      Elf.scanAsync({"libEGL.so"});
+    if (!Elf.egl().isValid() && !Elf.scanAsync({"libEGL.so"}))
+      LOGE("[SwapChainHook] Failed to scan libEGL.so");
 
     void *sym = Elf.egl().findSymbol("eglSwapBuffers");
     if (sym) {
-      int ret = DobbyHook(sym, (void *)Hooked_eglSwapBuffers,
-                          (void **)&g_OrigEglSwapBuffers);
-      SCH_LOGI("[SwapChainHook] DobbyHook(eglSwapBuffers)=%d target=%p", ret, sym);
-      if (ret == 0) {
-        std::lock_guard<std::mutex> lk(g_HookedAddrsMutex);
-        g_DobbyHookedAddrs.push_back(sym);
-      }
+      if (!HookLifecycleManager::GetInstance().install(
+          "eglSwapBuffers", sym, (void *)Hooked_eglSwapBuffers,
+          (void **)&g_OrigEglSwapBuffers))
+        LOGE("[SwapChainHook] Failed to install hook: eglSwapBuffers");
     }
 
     void *symDmg = Elf.egl().findSymbol("eglSwapBuffersWithDamageKHR");
     if (symDmg) {
-      int ret = DobbyHook(symDmg, (void *)Hooked_eglSwapBuffersWithDamageKHR,
-                          (void **)&g_OrigEglSwapBuffersWithDamage);
-      SCH_LOGI("[SwapChainHook] DobbyHook(eglSwapBuffersWithDamageKHR)=%d target=%p", ret,
-               symDmg);
-      if (ret == 0) {
-        std::lock_guard<std::mutex> lk(g_HookedAddrsMutex);
-        g_DobbyHookedAddrs.push_back(symDmg);
-      }
+      if (!HookLifecycleManager::GetInstance().install(
+          "eglSwapBuffersWithDamageKHR", symDmg,
+          (void *)Hooked_eglSwapBuffersWithDamageKHR,
+          (void **)&g_OrigEglSwapBuffersWithDamage))
+        LOGE("[SwapChainHook] Failed to install hook: eglSwapBuffersWithDamageKHR");
     }
   }
 
@@ -1417,13 +1398,8 @@ void Uninstall() {
 
   SCH_LOGI("[SwapChainHook] Uninstalling...");
 
-  // Unhook all DobbyHooked addresses
-  {
-    std::lock_guard<std::mutex> lk(g_HookedAddrsMutex);
-    for (void *addr : g_DobbyHookedAddrs)
-      DobbyDestroy(addr);
-    g_DobbyHookedAddrs.clear();
-  }
+  HookLifecycleManager::GetInstance().uninstallAll();
+  HookLifecycleManager::GetInstance().clear();
 
   g_OrigEglSwapBuffers = nullptr;
   g_OrigEglSwapBuffersWithDamage = nullptr;

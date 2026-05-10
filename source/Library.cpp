@@ -3,6 +3,7 @@
 #include "InputEvent/CustomHandleInput.h"
 #include "InputEvent/InputEventHook.h"
 #include "SwapChain/SwapChainHook.h"
+#include "UI/DiagnosticsPanel.h"
 #include "Utils/CrashHandler.h"
 #include "Utils/FileLogger.h"
 #include "Utils/HookUtils.h"
@@ -166,6 +167,10 @@ void main_thread() {
         }
       }
     }
+
+    ImGui::Separator();
+
+    DiagnosticsPanel::Render();
 
     ImGui::Separator();
 
