@@ -15,15 +15,15 @@ extern JavaVM* g_JavaVM; /// deprecated, use AndroidPlatform::GetJavaVM() instea
 
 namespace AndroidPlatform {
 
-JavaVM* GetJavaVM();
+[[nodiscard]] JavaVM* GetJavaVM();
 
-JNIEnv* GetJavaEnv();
+[[nodiscard]] JNIEnv* GetJavaEnv();
 
-android_app* FindAndroidAppViaJNI();
+[[nodiscard]] android_app* FindAndroidAppViaJNI();
 
-ANativeWindow* FindNativeWindowViaJNI();
+[[nodiscard]] ANativeWindow* FindNativeWindowViaJNI();
 
-ANativeWindow* GetNativeWindow();
+[[nodiscard]] ANativeWindow* GetNativeWindow();
 
 void ResetNativeWindowCache();
 

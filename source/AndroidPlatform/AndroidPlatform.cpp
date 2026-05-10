@@ -1,7 +1,9 @@
 #include "AndroidPlatform.h"
-#include <jni.h>
+
 #include "Core/ElfScannerManager.h"
 #include "Utils/Logger.h"
+
+#include <jni.h>
 
 struct android_app *g_App = nullptr;
 
@@ -9,7 +11,74 @@ JavaVM* g_JavaVM = nullptr; /// deprecated, use AndroidPlatform::GetJavaVM() ins
 
 namespace {
 ANativeWindow* g_CachedWindow = nullptr;
+
+class ScopedJniThreadAttachment {
+public:
+    explicit ScopedJniThreadAttachment(JavaVM* vm) noexcept : vm_(vm) {
+        if (!vm_) {
+            return;
+        }
+
+        if (vm_->GetEnv(reinterpret_cast<void**>(&env_), JNI_VERSION_1_6) == JNI_OK) {
+            return;
+        }
+
+        if (vm_->AttachCurrentThread(&env_, nullptr) == JNI_OK) {
+            attached_ = true;
+        } else {
+            env_ = nullptr;
+        }
+    }
+
+    ~ScopedJniThreadAttachment() noexcept {
+        if (attached_ && vm_) {
+            vm_->DetachCurrentThread();
+        }
+    }
+
+    ScopedJniThreadAttachment(const ScopedJniThreadAttachment&) = delete;
+    ScopedJniThreadAttachment& operator=(const ScopedJniThreadAttachment&) = delete;
+    ScopedJniThreadAttachment(ScopedJniThreadAttachment&&) = delete;
+    ScopedJniThreadAttachment& operator=(ScopedJniThreadAttachment&&) = delete;
+
+    [[nodiscard]] JNIEnv* env() const noexcept { return env_; }
+
+private:
+    JavaVM* vm_ = nullptr;
+    JNIEnv* env_ = nullptr;
+    bool attached_ = false;
+};
+
+class ScopedLocalFrame {
+public:
+    ScopedLocalFrame(JNIEnv* env, jint capacity) noexcept
+        : env_(env), pushed_(env_ && env_->PushLocalFrame(capacity) == JNI_OK) {}
+
+    ~ScopedLocalFrame() noexcept {
+        if (pushed_ && env_) {
+            env_->PopLocalFrame(nullptr);
+        }
+    }
+
+    ScopedLocalFrame(const ScopedLocalFrame&) = delete;
+    ScopedLocalFrame& operator=(const ScopedLocalFrame&) = delete;
+    ScopedLocalFrame(ScopedLocalFrame&&) = delete;
+    ScopedLocalFrame& operator=(ScopedLocalFrame&&) = delete;
+
+    [[nodiscard]] bool pushed() const noexcept { return pushed_; }
+
+private:
+    JNIEnv* env_ = nullptr;
+    bool pushed_ = false;
+};
+
+void ClearPendingJniException(JNIEnv* env) noexcept {
+    if (env && env->ExceptionCheck()) {
+        env->ExceptionClear();
+    }
 }
+
+} // namespace
 
 namespace AndroidPlatform {
 
@@ -40,7 +109,7 @@ JavaVM* GetJavaVM()
         return s_vm;
     }
 
-    LOGE("[AndroidPlatform] GetJavaVM: JNI_GetCreatedJavaVMs failed, count=%d", (int)count);
+    LOGE("[AndroidPlatform] GetJavaVM: JNI_GetCreatedJavaVMs failed, count=%d", static_cast<int>(count));
     return nullptr;
 }
 
@@ -53,7 +122,7 @@ JNIEnv *GetJavaEnv()
         return nullptr;
     }
     JNIEnv *env = nullptr;
-    if (vm->GetEnv((void **)&env, JNI_VERSION_1_6) == JNI_OK)
+    if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) == JNI_OK)
         return env;
     LOGW("[AndroidPlatform] GetJavaEnv: GetEnv failed (thread not attached?)");
     return nullptr;
@@ -76,23 +145,19 @@ android_app* FindAndroidAppViaJNI()
         return nullptr;
     }
 
-    JNIEnv* env = nullptr;
-    bool needDetach = false;
-
-    if (vm->GetEnv((void**)&env, JNI_VERSION_1_6) != JNI_OK)
+    ScopedJniThreadAttachment attachment{vm};
+    JNIEnv* env = attachment.env();
+    if (!env)
     {
-        if (vm->AttachCurrentThread(&env, nullptr) != JNI_OK)
-        {
-            LOGE("[AndroidPlatform] FindAndroidAppViaJNI: AttachCurrentThread failed");
-            return nullptr;
-        }
-        needDetach = true;
+        LOGE("[AndroidPlatform] FindAndroidAppViaJNI: AttachCurrentThread failed");
+        return nullptr;
     }
 
     android_app* result = nullptr;
 
     // PushLocalFrame 确保所有 JNI 局部引用在 PopLocalFrame 时自动释放
-    if (env->PushLocalFrame(32) == 0)
+    const ScopedLocalFrame localFrame{env, 32};
+    if (localFrame.pushed())
     {
         do {
             // 1. ActivityThread.currentActivityThread()
@@ -151,7 +216,7 @@ android_app* FindAndroidAppViaJNI()
                 if (env->IsInstanceOf(activity, naClass))
                 {
                     jlong handle = env->GetLongField(activity, handleField);
-                    LOGI("[AndroidPlatform] FindAndroidAppViaJNI: NativeActivity found, mNativeHandle=0x%llx", (unsigned long long)handle);
+                    LOGI("[AndroidPlatform] FindAndroidAppViaJNI: NativeActivity found, mNativeHandle=0x%llx", static_cast<unsigned long long>(handle));
                     if (handle != 0)
                     {
                         auto* na = reinterpret_cast<ANativeActivity*>(handle);
@@ -162,16 +227,9 @@ android_app* FindAndroidAppViaJNI()
                 if (result) break;
             }
         } while (false);
-
-        env->PopLocalFrame(nullptr);
     }
 
-    if (env->ExceptionCheck())
-        env->ExceptionClear();
-
-    if (needDetach)
-        vm->DetachCurrentThread();
-
+    ClearPendingJniException(env);
     return result;
 }
 
@@ -194,22 +252,18 @@ ANativeWindow* FindNativeWindowViaJNI()
         return nullptr;
     }
 
-    JNIEnv* env = nullptr;
-    bool needDetach = false;
-
-    if (vm->GetEnv((void**)&env, JNI_VERSION_1_6) != JNI_OK)
+    ScopedJniThreadAttachment attachment{vm};
+    JNIEnv* env = attachment.env();
+    if (!env)
     {
-        if (vm->AttachCurrentThread(&env, nullptr) != JNI_OK)
-        {
-            LOGE("[AndroidPlatform] FindNativeWindowViaJNI: AttachCurrentThread failed");
-            return nullptr;
-        }
-        needDetach = true;
+        LOGE("[AndroidPlatform] FindNativeWindowViaJNI: AttachCurrentThread failed");
+        return nullptr;
     }
 
     ANativeWindow* result = nullptr;
 
-    if (env->PushLocalFrame(32) == 0)
+    const ScopedLocalFrame localFrame{env, 32};
+    if (localFrame.pushed())
     {
         do {
             // 1. ActivityThread.currentActivityThread()
@@ -306,7 +360,7 @@ ANativeWindow* FindNativeWindowViaJNI()
                     jboolean valid = env->CallBooleanMethod(surface, isValidMethod);
                     if (!valid)
                     {
-                        LOGW("[AndroidPlatform] FindNativeWindowViaJNI: Surface not valid for activity[%d]", (int)i);
+                        LOGW("[AndroidPlatform] FindNativeWindowViaJNI: Surface not valid for activity[%d]", static_cast<int>(i));
                         continue;
                     }
                 }
@@ -322,16 +376,9 @@ ANativeWindow* FindNativeWindowViaJNI()
                 if (result) break;
             }
         } while (false);
-
-        env->PopLocalFrame(nullptr);
     }
 
-    if (env->ExceptionCheck())
-        env->ExceptionClear();
-
-    if (needDetach)
-        vm->DetachCurrentThread();
-
+    ClearPendingJniException(env);
     return result;
 }
 
