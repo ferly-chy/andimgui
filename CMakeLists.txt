@@ -42,6 +42,7 @@ file(GLOB IMGUI_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/imgui_draw.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/imgui_tables.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/imgui_widgets.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/misc/cpp/imgui_stdlib.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/backends/imgui_impl_android.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/backends/imgui_impl_vulkan.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/backends/imgui_impl_opengl3.cpp
@@ -51,6 +52,7 @@ add_library(imgui STATIC ${IMGUI_SOURCES})
 target_include_directories(imgui PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui
     ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/backends
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/misc/cpp
 )
 target_link_libraries(imgui PUBLIC android vulkan GLESv3 EGL)
 

@@ -10,6 +10,7 @@
 #include "Utils/ImAnime.hpp"
 #include "Utils/Logger.h"
 #include "imgui/imgui.h"
+#include "imgui_stdlib.h"
 
 #include <atomic>
 #include <chrono>
@@ -153,20 +154,9 @@ void main_thread() {
       }
     }
 
-    if (ImGui::CollapsingHeader("Visuals", ImGuiTreeNodeFlags_DefaultOpen)) {
-      ImGui::Checkbox("Enable ESP", &espEnabled);
-      if (espEnabled) {
-        ImGui::SameLine();
-        if (ImGui::Button("Settings"))
-          ImGui::OpenPopup("esp_settings");
 
-        if (ImGui::BeginPopup("esp_settings")) {
-          ImGui::Checkbox("Boxes", &espBoxes);
-          ImGui::Checkbox("Lines", &espLines);
-          ImGui::EndPopup();
-        }
-      }
-    }
+    std::string text;
+    ImGui::InputText("Message", &text);
 
     ImGui::Separator();
 
