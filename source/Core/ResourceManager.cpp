@@ -1,12 +1,110 @@
 #include "ResourceManager.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <filesystem>
+#include <optional>
+#include <string_view>
 #include <system_error>
 #include <vector>
 
 #include "Utils/Logger.h"
+
+namespace {
+
+using FontCandidate = std::pair<std::uintmax_t, std::string>;
+
+constexpr std::array<std::string_view, 3> kFontDirs = {
+    "/system/fonts",
+    "/system/font",
+    "/data/fonts",
+};
+
+constexpr std::array<std::string_view, 5> kPreferredChineseFonts = {
+    "MiSansVF.ttf",
+    "SourceSansPro-Bold.ttf",
+    "DroidSansMono.ttf",
+    "SysSans-Hans-Regular.ttf",
+    "ZUKChinese.ttf",
+};
+
+[[nodiscard]] std::string ToLower(std::string value) {
+    std::ranges::transform(value, value.begin(),
+        [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return value;
+}
+
+[[nodiscard]] bool LooksLikeChineseFont(const std::filesystem::path& path) {
+    const std::string extension = ToLower(path.extension().string());
+    if (extension != ".ttf" && extension != ".otf") {
+        return false;
+    }
+
+    const std::string filename = ToLower(path.filename().string());
+    return filename.find("cjk") != std::string::npos ||
+           filename.find("hans") != std::string::npos ||
+           filename.find("chinese") != std::string::npos ||
+           filename.find("sc") != std::string::npos ||
+           filename.find("noto") != std::string::npos;
+}
+
+[[nodiscard]] std::optional<std::string> FindPreferredFontInDir(const std::filesystem::path& dir) {
+    std::error_code ec;
+    for (const auto fontName : kPreferredChineseFonts) {
+        const std::filesystem::path fontPath = dir / fontName;
+        if (std::filesystem::exists(fontPath, ec) && !ec) {
+            return fontPath.string();
+        }
+        ec.clear();
+    }
+    return std::nullopt;
+}
+
+void CollectFallbackFontsInDir(const std::filesystem::path& dir, std::vector<FontCandidate>& candidateFonts) {
+    std::error_code ec;
+    std::filesystem::directory_iterator it{dir, ec};
+    if (ec) {
+        FLOGW("Error scanning directory {}: {}", dir.string(), ec.message());
+        return;
+    }
+
+    const std::filesystem::directory_iterator end{};
+    while (it != end) {
+        const auto& entry = *it;
+
+        if (!entry.is_regular_file(ec) || ec) {
+            ec.clear();
+        } else if (LooksLikeChineseFont(entry.path())) {
+            const std::uintmax_t fileSize = std::filesystem::file_size(entry.path(), ec);
+            if (ec) {
+                ec.clear();
+            } else {
+                candidateFonts.emplace_back(fileSize, entry.path().string());
+            }
+        }
+
+        it.increment(ec);
+        if (ec) {
+            FLOGW("Error scanning directory {}: {}", dir.string(), ec.message());
+            ec.clear();
+            break;
+        }
+    }
+}
+
+[[nodiscard]] std::optional<std::string> SelectLargestFallbackFont(std::vector<FontCandidate>& candidateFonts) {
+    if (candidateFonts.empty()) {
+        return std::nullopt;
+    }
+
+    std::ranges::sort(candidateFonts, [](const auto& lhs, const auto& rhs) {
+        return lhs.first > rhs.first;
+    });
+    return candidateFonts.front().second;
+}
+
+} // namespace
 
 ResourceManager& ResourceManager::GetInstance() {
     static ResourceManager instance;
@@ -18,96 +116,29 @@ void ResourceManager::reset() {
 }
 
 std::string ResourceManager::findSystemChineseFont() {
-    const std::vector<std::string> fontDirs = {
-        "/system/fonts",
-        "/system/font",
-        "/data/fonts"
-    };
-
-    const std::vector<std::string> chineseFonts = {
-        "MiSansVF.ttf",
-        "SourceSansPro-Bold.ttf",
-        "DroidSansMono.ttf",
-        "SysSans-Hans-Regular.ttf",
-        "ZUKChinese.ttf"
-    };
-
     // 遍历字体目录
-    for (const auto& dir : fontDirs) {
+    for (const auto dirName : kFontDirs) {
+        const std::filesystem::path dir{dirName};
         std::error_code ec;
         if (!std::filesystem::exists(dir, ec) || ec) {
             continue;
         }
 
         // 按优先级查找字体
-        for (const auto& fontName : chineseFonts) {
-            const std::filesystem::path fontPath = std::filesystem::path{dir} / fontName;
-            if (std::filesystem::exists(fontPath, ec) && !ec) {
-                const auto pathString = fontPath.string();
-                FLOGI("Found Chinese font: {}", pathString);
-                return pathString;
-            }
-            ec.clear();
+        if (auto preferredFont = FindPreferredFontInDir(dir)) {
+            FLOGI("Found Chinese font: {}", *preferredFont);
+            return *preferredFont;
         }
 
         // 如果优先列表中没找到，收集所有符合条件的字体并按大小排序
-        std::vector<std::pair<std::uintmax_t, std::string>> candidateFonts;
+        std::vector<FontCandidate> candidateFonts;
+        CollectFallbackFontsInDir(dir, candidateFonts);
 
-        std::filesystem::directory_iterator it{dir, ec};
-        if (ec) {
-            FLOGW("Error scanning directory {}: {}", dir, ec.message());
-            continue;
-        }
-
-        const std::filesystem::directory_iterator end{};
-        while (it != end) {
-            const auto& entry = *it;
-
-            if (!entry.is_regular_file(ec) || ec) {
-                ec.clear();
-            } else {
-                std::string filename = entry.path().filename().string();
-                std::string extension = entry.path().extension().string();
-
-                // 转换为小写比较
-                std::transform(extension.begin(), extension.end(), extension.begin(),
-                    [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-                std::transform(filename.begin(), filename.end(), filename.begin(),
-                    [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-
-                // 查找包含中文相关关键词的字体
-                if ((extension == ".ttf" || extension == ".otf") &&
-                    (filename.find("cjk") != std::string::npos ||
-                     filename.find("hans") != std::string::npos ||
-                     filename.find("chinese") != std::string::npos ||
-                     filename.find("sc") != std::string::npos ||
-                     filename.find("noto") != std::string::npos)) {
-                    const std::uintmax_t fileSize = std::filesystem::file_size(entry.path(), ec);
-                    if (ec) {
-                        ec.clear();
-                    } else {
-                        candidateFonts.emplace_back(fileSize, entry.path().string());
-                    }
-                }
-            }
-
-            it.increment(ec);
-            if (ec) {
-                FLOGW("Error scanning directory {}: {}", dir, ec.message());
-                ec.clear();
-                break;
-            }
-        }
-
-        // 按文件大小从大到小排序
-        if (!candidateFonts.empty()) {
-            std::sort(candidateFonts.begin(), candidateFonts.end(),
-                [](const auto& a, const auto& b) { return a.first > b.first; });
-
-            const auto& selectedFont = candidateFonts.front();
+        if (auto selectedFont = SelectLargestFallbackFont(candidateFonts)) {
+            const auto& selected = candidateFonts.front();
             FLOGI("Found Chinese font (fallback, size: {} bytes): {}",
-                 selectedFont.first, selectedFont.second);
-            return selectedFont.second;
+                 selected.first, selected.second);
+            return *selectedFont;
         }
     }
 

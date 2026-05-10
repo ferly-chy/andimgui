@@ -72,10 +72,45 @@ private:
     bool pushed_ = false;
 };
 
-void ClearPendingJniException(JNIEnv* env) noexcept {
+bool ClearPendingJniException(JNIEnv* env) noexcept {
     if (env && env->ExceptionCheck()) {
         env->ExceptionClear();
+        return true;
     }
+    return false;
+}
+
+template <typename T>
+[[nodiscard]] T RequireNoJniException(JNIEnv* env, T value) noexcept {
+    const bool hadException = ClearPendingJniException(env);
+    if (!value || hadException) {
+        return nullptr;
+    }
+    return value;
+}
+
+[[nodiscard]] jclass FindClassChecked(JNIEnv* env, const char* className) noexcept {
+    return RequireNoJniException(env, env->FindClass(className));
+}
+
+[[nodiscard]] jmethodID GetMethodIDChecked(JNIEnv* env, jclass clazz, const char* name, const char* signature) noexcept {
+    return RequireNoJniException(env, env->GetMethodID(clazz, name, signature));
+}
+
+[[nodiscard]] jmethodID GetStaticMethodIDChecked(JNIEnv* env, jclass clazz, const char* name, const char* signature) noexcept {
+    return RequireNoJniException(env, env->GetStaticMethodID(clazz, name, signature));
+}
+
+[[nodiscard]] jfieldID GetFieldIDChecked(JNIEnv* env, jclass clazz, const char* name, const char* signature) noexcept {
+    return RequireNoJniException(env, env->GetFieldID(clazz, name, signature));
+}
+
+[[nodiscard]] jobject GetObjectFieldChecked(JNIEnv* env, jobject object, jfieldID field) noexcept {
+    return RequireNoJniException(env, env->GetObjectField(object, field));
+}
+
+[[nodiscard]] jobject CallObjectMethodChecked(JNIEnv* env, jobject object, jmethodID method, auto... args) noexcept {
+    return RequireNoJniException(env, env->CallObjectMethod(object, method, args...));
 }
 
 } // namespace
@@ -161,55 +196,53 @@ android_app* FindAndroidAppViaJNI()
     {
         do {
             // 1. ActivityThread.currentActivityThread()
-            jclass atClass = env->FindClass("android/app/ActivityThread");
-            if (!atClass || env->ExceptionCheck()) { env->ExceptionClear(); break; }
+            jclass atClass = FindClassChecked(env, "android/app/ActivityThread");
+            if (!atClass) { break; }
 
-            jmethodID catMethod = env->GetStaticMethodID(atClass, "currentActivityThread",
+            jmethodID catMethod = GetStaticMethodIDChecked(env, atClass, "currentActivityThread",
                 "()Landroid/app/ActivityThread;");
-            if (!catMethod || env->ExceptionCheck()) { env->ExceptionClear(); break; }
+            if (!catMethod) { break; }
 
-            jobject at = env->CallStaticObjectMethod(atClass, catMethod);
-            if (!at || env->ExceptionCheck()) { env->ExceptionClear(); break; }
+            jobject at = RequireNoJniException(env, env->CallStaticObjectMethod(atClass, catMethod));
+            if (!at) { break; }
 
             // 2. mActivities: ArrayMap<IBinder, ActivityClientRecord> (API 21+)
-            jfieldID activitiesField = env->GetFieldID(atClass, "mActivities",
+            jfieldID activitiesField = GetFieldIDChecked(env, atClass, "mActivities",
                 "Landroid/util/ArrayMap;");
-            if (!activitiesField || env->ExceptionCheck()) { env->ExceptionClear(); break; }
+            if (!activitiesField) { break; }
 
-            jobject activities = env->GetObjectField(at, activitiesField);
-            if (!activities || env->ExceptionCheck()) { env->ExceptionClear(); break; }
+            jobject activities = GetObjectFieldChecked(env, at, activitiesField);
+            if (!activities) { break; }
 
             // 3. 遍历 ArrayMap 获取 ActivityClientRecord
-            jclass mapClass = env->GetObjectClass(activities);
-            jmethodID sizeMethod = env->GetMethodID(mapClass, "size", "()I");
-            jmethodID valueAtMethod = env->GetMethodID(mapClass, "valueAt",
+            jclass mapClass = RequireNoJniException(env, env->GetObjectClass(activities));
+            if (!mapClass) { break; }
+            jmethodID sizeMethod = GetMethodIDChecked(env, mapClass, "size", "()I");
+            jmethodID valueAtMethod = GetMethodIDChecked(env, mapClass, "valueAt",
                 "(I)Ljava/lang/Object;");
             if (!sizeMethod || !valueAtMethod) break;
 
             jint size = env->CallIntMethod(activities, sizeMethod);
 
             // 4. 查找 NativeActivity（含子类）并读取 mNativeHandle
-            jclass naClass = env->FindClass("android/app/NativeActivity");
-            if (!naClass || env->ExceptionCheck()) { env->ExceptionClear(); break; }
+            jclass naClass = FindClassChecked(env, "android/app/NativeActivity");
+            if (!naClass) { break; }
 
-            jfieldID handleField = env->GetFieldID(naClass, "mNativeHandle", "J");
-            if (!handleField || env->ExceptionCheck()) { env->ExceptionClear(); break; }
+            jfieldID handleField = GetFieldIDChecked(env, naClass, "mNativeHandle", "J");
+            if (!handleField) { break; }
 
             for (jint i = 0; i < size; i++)
             {
-                jobject record = env->CallObjectMethod(activities, valueAtMethod, i);
+                jobject record = CallObjectMethodChecked(env, activities, valueAtMethod, i);
                 if (!record) continue;
 
-                jclass recClass = env->GetObjectClass(record);
-                jfieldID actField = env->GetFieldID(recClass, "activity",
+                jclass recClass = RequireNoJniException(env, env->GetObjectClass(record));
+                if (!recClass) { continue; }
+                jfieldID actField = GetFieldIDChecked(env, recClass, "activity",
                     "Landroid/app/Activity;");
-                if (!actField || env->ExceptionCheck())
-                {
-                    env->ExceptionClear();
-                    continue;
-                }
+                if (!actField) { continue; }
 
-                jobject activity = env->GetObjectField(record, actField);
+                jobject activity = GetObjectFieldChecked(env, record, actField);
                 if (!activity) continue;
 
                 // IsInstanceOf 会匹配 NativeActivity 及其所有子类（如 UE4 GameActivity）
@@ -267,28 +300,29 @@ ANativeWindow* FindNativeWindowViaJNI()
     {
         do {
             // 1. ActivityThread.currentActivityThread()
-            jclass atClass = env->FindClass("android/app/ActivityThread");
-            if (!atClass || env->ExceptionCheck()) { env->ExceptionClear(); break; }
+            jclass atClass = FindClassChecked(env, "android/app/ActivityThread");
+            if (!atClass) { break; }
 
-            jmethodID catMethod = env->GetStaticMethodID(atClass, "currentActivityThread",
+            jmethodID catMethod = GetStaticMethodIDChecked(env, atClass, "currentActivityThread",
                 "()Landroid/app/ActivityThread;");
-            if (!catMethod || env->ExceptionCheck()) { env->ExceptionClear(); break; }
+            if (!catMethod) { break; }
 
-            jobject at = env->CallStaticObjectMethod(atClass, catMethod);
-            if (!at || env->ExceptionCheck()) { env->ExceptionClear(); break; }
+            jobject at = RequireNoJniException(env, env->CallStaticObjectMethod(atClass, catMethod));
+            if (!at) { break; }
 
             // 2. mActivities: ArrayMap<IBinder, ActivityClientRecord>
-            jfieldID activitiesField = env->GetFieldID(atClass, "mActivities",
+            jfieldID activitiesField = GetFieldIDChecked(env, atClass, "mActivities",
                 "Landroid/util/ArrayMap;");
-            if (!activitiesField || env->ExceptionCheck()) { env->ExceptionClear(); break; }
+            if (!activitiesField) { break; }
 
-            jobject activities = env->GetObjectField(at, activitiesField);
-            if (!activities || env->ExceptionCheck()) { env->ExceptionClear(); break; }
+            jobject activities = GetObjectFieldChecked(env, at, activitiesField);
+            if (!activities) { break; }
 
             // 3. 遍历 ArrayMap
-            jclass mapClass = env->GetObjectClass(activities);
-            jmethodID sizeMethod = env->GetMethodID(mapClass, "size", "()I");
-            jmethodID valueAtMethod = env->GetMethodID(mapClass, "valueAt",
+            jclass mapClass = RequireNoJniException(env, env->GetObjectClass(activities));
+            if (!mapClass) { break; }
+            jmethodID sizeMethod = GetMethodIDChecked(env, mapClass, "size", "()I");
+            jmethodID valueAtMethod = GetMethodIDChecked(env, mapClass, "valueAt",
                 "(I)Ljava/lang/Object;");
             if (!sizeMethod || !valueAtMethod) break;
 
@@ -296,66 +330,66 @@ ANativeWindow* FindNativeWindowViaJNI()
 
             for (jint i = 0; i < size; i++)
             {
-                jobject record = env->CallObjectMethod(activities, valueAtMethod, i);
+                jobject record = CallObjectMethodChecked(env, activities, valueAtMethod, i);
                 if (!record) continue;
 
                 // record.activity
-                jclass recClass = env->GetObjectClass(record);
-                jfieldID actField = env->GetFieldID(recClass, "activity",
+                jclass recClass = RequireNoJniException(env, env->GetObjectClass(record));
+                if (!recClass) { continue; }
+                jfieldID actField = GetFieldIDChecked(env, recClass, "activity",
                     "Landroid/app/Activity;");
-                if (!actField || env->ExceptionCheck())
-                {
-                    env->ExceptionClear();
-                    continue;
-                }
+                if (!actField) { continue; }
 
-                jobject activity = env->GetObjectField(record, actField);
+                jobject activity = GetObjectFieldChecked(env, record, actField);
                 if (!activity) continue;
 
                 // Activity.getWindow()
-                jclass actClass = env->FindClass("android/app/Activity");
-                if (!actClass || env->ExceptionCheck()) { env->ExceptionClear(); continue; }
+                jclass actClass = FindClassChecked(env, "android/app/Activity");
+                if (!actClass) { continue; }
 
-                jmethodID getWindowMethod = env->GetMethodID(actClass, "getWindow",
+                jmethodID getWindowMethod = GetMethodIDChecked(env, actClass, "getWindow",
                     "()Landroid/view/Window;");
-                if (!getWindowMethod || env->ExceptionCheck()) { env->ExceptionClear(); continue; }
+                if (!getWindowMethod) { continue; }
 
-                jobject window = env->CallObjectMethod(activity, getWindowMethod);
-                if (!window || env->ExceptionCheck()) { env->ExceptionClear(); continue; }
+                jobject window = CallObjectMethodChecked(env, activity, getWindowMethod);
+                if (!window) { continue; }
 
                 // Window.getDecorView()
-                jclass windowClass = env->GetObjectClass(window);
-                jmethodID getDecorViewMethod = env->GetMethodID(windowClass, "getDecorView",
+                jclass windowClass = RequireNoJniException(env, env->GetObjectClass(window));
+                if (!windowClass) { continue; }
+                jmethodID getDecorViewMethod = GetMethodIDChecked(env, windowClass, "getDecorView",
                     "()Landroid/view/View;");
-                if (!getDecorViewMethod || env->ExceptionCheck()) { env->ExceptionClear(); continue; }
+                if (!getDecorViewMethod) { continue; }
 
-                jobject decorView = env->CallObjectMethod(window, getDecorViewMethod);
-                if (!decorView || env->ExceptionCheck()) { env->ExceptionClear(); continue; }
+                jobject decorView = CallObjectMethodChecked(env, window, getDecorViewMethod);
+                if (!decorView) { continue; }
 
                 // View.getViewRootImpl()（隐藏 API，所有 Android 版本均存在）
-                jclass viewClass = env->FindClass("android/view/View");
-                if (!viewClass || env->ExceptionCheck()) { env->ExceptionClear(); continue; }
+                jclass viewClass = FindClassChecked(env, "android/view/View");
+                if (!viewClass) { continue; }
 
-                jmethodID getVRIMethod = env->GetMethodID(viewClass, "getViewRootImpl",
+                jmethodID getVRIMethod = GetMethodIDChecked(env, viewClass, "getViewRootImpl",
                     "()Landroid/view/ViewRootImpl;");
-                if (!getVRIMethod || env->ExceptionCheck()) { env->ExceptionClear(); continue; }
+                if (!getVRIMethod) { continue; }
 
-                jobject vri = env->CallObjectMethod(decorView, getVRIMethod);
-                if (!vri || env->ExceptionCheck()) { env->ExceptionClear(); continue; }
+                jobject vri = CallObjectMethodChecked(env, decorView, getVRIMethod);
+                if (!vri) { continue; }
 
                 // ViewRootImpl.mSurface
-                jclass vriClass = env->GetObjectClass(vri);
-                jfieldID surfaceField = env->GetFieldID(vriClass, "mSurface",
+                jclass vriClass = RequireNoJniException(env, env->GetObjectClass(vri));
+                if (!vriClass) { continue; }
+                jfieldID surfaceField = GetFieldIDChecked(env, vriClass, "mSurface",
                     "Landroid/view/Surface;");
-                if (!surfaceField || env->ExceptionCheck()) { env->ExceptionClear(); continue; }
+                if (!surfaceField) { continue; }
 
-                jobject surface = env->GetObjectField(vri, surfaceField);
-                if (!surface || env->ExceptionCheck()) { env->ExceptionClear(); continue; }
+                jobject surface = GetObjectFieldChecked(env, vri, surfaceField);
+                if (!surface) { continue; }
 
                 // Surface.isValid() 检查
-                jclass surfClass = env->GetObjectClass(surface);
-                jmethodID isValidMethod = env->GetMethodID(surfClass, "isValid", "()Z");
-                if (isValidMethod && !env->ExceptionCheck())
+                jclass surfClass = RequireNoJniException(env, env->GetObjectClass(surface));
+                if (!surfClass) { continue; }
+                jmethodID isValidMethod = GetMethodIDChecked(env, surfClass, "isValid", "()Z");
+                if (isValidMethod)
                 {
                     jboolean valid = env->CallBooleanMethod(surface, isValidMethod);
                     if (!valid)
