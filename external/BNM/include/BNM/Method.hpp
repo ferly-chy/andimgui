@@ -91,10 +91,15 @@ template <typename Ret> struct Method : public MethodBase {
       return BNM::PRIVATE_INTERNAL::ReturnEmpty<Ret>();
     }
 
-    bool canInfo = true;
+    if (!_data->methodPointer) {
+      BNM_LOG_ERR("An attempt to call %s without method pointer!",
+                  str().c_str());
+      return BNM::PRIVATE_INTERNAL::ReturnEmpty<Ret>();
+    }
+
     if (sizeof...(Parameters) != _data->parameters_count) {
-      canInfo = false;
-      BNM_LOG_WARN(DBG_BNM_MSG_Method_Call_Warn, str().c_str());
+      BNM_LOG_ERR(DBG_BNM_MSG_Method_Call_Warn, str().c_str());
+      return BNM::PRIVATE_INTERNAL::ReturnEmpty<Ret>();
     }
 
     if (!_isStatic && !IsAllocated(_instance)) {
@@ -104,27 +109,18 @@ template <typename Ret> struct Method : public MethodBase {
 
     auto method = _data;
     if (!_isStatic) {
-      if (canInfo)
-        return ((Ret (*)(IL2CPP::Il2CppObject *, Parameters...,
-                         IL2CPP::MethodInfo *))method->methodPointer)(
-            _instance, parameters..., method);
-      return ((Ret (*)(IL2CPP::Il2CppObject *,
-                       Parameters...))method->methodPointer)(_instance,
-                                                             parameters...);
+      return ((Ret (*)(IL2CPP::Il2CppObject *, Parameters...,
+                       IL2CPP::MethodInfo *))method->methodPointer)(
+          _instance, parameters..., method);
     }
 
 #if UNITY_VER > 174
-    if (canInfo)
-      return (
-          (Ret (*)(Parameters..., IL2CPP::MethodInfo *))method->methodPointer)(
-          parameters..., method);
-    return ((Ret (*)(Parameters...))method->methodPointer)(parameters...);
+    return (
+        (Ret (*)(Parameters..., IL2CPP::MethodInfo *))method->methodPointer)(
+        parameters..., method);
 #else
-    if (canInfo)
-      return ((Ret (*)(void *, Parameters..., IL2CPP::MethodInfo *))
-                  method->methodPointer)(nullptr, parameters..., method);
-    return ((Ret (*)(void *, Parameters...))method->methodPointer)(
-        nullptr, parameters...);
+    return ((Ret (*)(void *, Parameters..., IL2CPP::MethodInfo *))
+                method->methodPointer)(nullptr, parameters..., method);
 #endif
   }
 
@@ -159,7 +155,11 @@ Class::CreateNewObjectParameters(Parameters... parameters) const {
   TryInit();
   auto name = BNM_OBFUSCATE(".ctor");
   auto method = GetMethod(name, sizeof...(Parameters));
+  if (!method.IsValid())
+    return nullptr;
   auto instance = CreateNewInstance();
+  if (!instance)
+    return nullptr;
   method.template cast<void>()[instance](parameters...);
   return instance;
 }
@@ -173,7 +173,11 @@ BNM::IL2CPP::Il2CppObject *Class::CreateNewObjectTypes(
   TryInit();
   auto name = BNM_OBFUSCATE(".ctor");
   auto method = GetMethod(name, parameterNames);
+  if (!method.IsValid())
+    return nullptr;
   auto instance = CreateNewInstance();
+  if (!instance)
+    return nullptr;
   method.template cast<void>()[instance](parameters...);
   return instance;
 }

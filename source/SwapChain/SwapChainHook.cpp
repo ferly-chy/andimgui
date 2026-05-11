@@ -9,6 +9,8 @@
 #include <cstdint>
 #include <functional>
 #include <mutex>
+#include <cstring>
+#include <pthread.h>
 #include <vector>
 
 #ifndef VK_USE_PLATFORM_ANDROID_KHR
@@ -82,6 +84,37 @@ static void ResetGlesImGuiTracking() {
   g_ImGuiEglSurface = EGL_NO_SURFACE;
   g_ImGuiEglContext = EGL_NO_CONTEXT;
   g_GlesFrameCounter = 0;
+}
+
+static bool IsAndroidHwuiRenderThread() {
+  char threadName[16] = {};
+  if (pthread_getname_np(pthread_self(), threadName, sizeof(threadName)) != 0)
+    return false;
+  return std::strcmp(threadName, "RenderThread") == 0;
+}
+
+static bool IsLikelyGameGlesTarget(EGLDisplay display, EGLSurface surface) {
+  if (display == EGL_NO_DISPLAY || surface == EGL_NO_SURFACE)
+    return false;
+
+  // Android's HWUI RenderThread also presents through libEGL. Rendering ImGui
+  // there initializes the GL backend on the framework/decor-view context, not
+  // the game's Unity GL context, and can hit ImGui_ImplOpenGL3_NewFrame asserts.
+  if (IsAndroidHwuiRenderThread()) {
+    SCH_LOGW("[SwapChainHook/GL] Skipping Android HWUI RenderThread target display=%p surface=%p context=%p",
+             display, surface, eglGetCurrentContext());
+    return false;
+  }
+
+  EGLint w = 0, h = 0;
+  if (!eglQuerySurface(display, surface, EGL_WIDTH, &w) ||
+      !eglQuerySurface(display, surface, EGL_HEIGHT, &h) || w <= 0 || h <= 0) {
+    SCH_LOGW("[SwapChainHook/GL] Skipping invalid EGL target display=%p surface=%p size=%dx%d",
+             display, surface, w, h);
+    return false;
+  }
+
+  return true;
 }
 
 static bool ReinitializeGlesImGui(const char *reason, EGLDisplay display, EGLSurface surface) {
@@ -343,6 +376,9 @@ static bool EnsureGlesImGuiReady(EGLDisplay display, EGLSurface surface) {
   if (currentContext == EGL_NO_CONTEXT)
     return false;
 
+  if (!IsLikelyGameGlesTarget(display, surface))
+    return false;
+
   if (g_VkInitialized)
     return false;
 
@@ -462,6 +498,7 @@ static EGLBoolean Hooked_eglSwapBuffersWithDamageKHR(EGLDisplay display,
 
 // Vulkan 函数指针
 static PFN_vkQueuePresentKHR g_OrigVkQueuePresent = nullptr;
+static PFN_vkCreateInstance g_OrigVkCreateInstance = nullptr;
 static PFN_vkCreateDevice g_OrigVkCreateDevice = nullptr;
 static PFN_vkDestroyDevice g_OrigVkDestroyDevice = nullptr;
 static PFN_vkGetDeviceQueue g_OrigVkGetDeviceQueue = nullptr;
@@ -469,6 +506,7 @@ static PFN_vkCreateSwapchainKHR g_OrigVkCreateSwapchain = nullptr;
 static PFN_vkDestroySwapchainKHR g_OrigVkDestroySwapchain = nullptr;
 
 // 捕获的 Vulkan 对象
+static VkInstance g_VkInstance = VK_NULL_HANDLE;
 static VkPhysicalDevice g_VkPhysDev = VK_NULL_HANDLE;
 static VkDevice g_VkDevice = VK_NULL_HANDLE;
 static VkQueue g_VkQueue = VK_NULL_HANDLE;
@@ -491,6 +529,8 @@ static VkFormat g_VkSwapFormat = VK_FORMAT_UNDEFINED;
 static VkExtent2D g_VkSwapExtent = {}; // 交换链实际尺寸（可能是竖屏）
 static VkSurfaceTransformFlagBitsKHR g_VkPreTransform =
     VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+
+static bool TryInitializeVulkanOverlay(const char *reason);
 
 /**
  * @brief 判断 preTransform 是否包含 90°/270° 旋转
@@ -892,11 +932,30 @@ static bool InitImGuiVulkan() {
     ImGui::DestroyContext();
     return false;
   }
+
+  if (g_VkPhysDev == VK_NULL_HANDLE || g_VkDevice == VK_NULL_HANDLE ||
+      g_VkQueue == VK_NULL_HANDLE || g_VkQueueFamily == UINT32_MAX ||
+      g_VkDescriptorPool == VK_NULL_HANDLE || g_VkRenderPass == VK_NULL_HANDLE ||
+      g_VkSwapImages.size() < 2) {
+    LOGE("[SwapChainHook/Vk] Missing required Vulkan handles: instance=%p physDev=%p device=%p queue=%p queueFamily=%u descriptorPool=%p renderPass=%p images=%zu",
+         g_VkInstance, g_VkPhysDev, g_VkDevice, g_VkQueue, g_VkQueueFamily,
+         g_VkDescriptorPool, g_VkRenderPass, g_VkSwapImages.size());
+    ResourceManager::GetInstance().reset();
+    ImGui::DestroyContext();
+    return false;
+  }
+
+  if (g_VkInstance == VK_NULL_HANDLE) {
+    SCH_LOGW("[SwapChainHook/Vk] VkInstance was not captured before device/swapchain; using non-null compatibility token for ImGui backend sanity check");
+  }
+
   ImGui_ImplAndroid_Init(vkWindow);
 
   // Vulkan 渲染后端
   ImGui_ImplVulkan_InitInfo initInfo{};
-  initInfo.Instance = VK_NULL_HANDLE; // 不需要，ImGui 不自行创建资源
+  initInfo.Instance = g_VkInstance != VK_NULL_HANDLE
+                          ? g_VkInstance
+                          : reinterpret_cast<VkInstance>(g_VkPhysDev);
   initInfo.PhysicalDevice = g_VkPhysDev;
   initInfo.Device = g_VkDevice;
   initInfo.QueueFamily = g_VkQueueFamily;
@@ -942,9 +1001,49 @@ static bool InitImGuiVulkan() {
   return true;
 }
 
+static bool TryInitializeVulkanOverlay(const char *reason) {
+  if (g_VkInitialized)
+    return true;
+
+  if (g_VkDevice == VK_NULL_HANDLE || g_VkQueue == VK_NULL_HANDLE ||
+      g_VkSwapchain == VK_NULL_HANDLE || g_VkSwapImages.empty()) {
+    SCH_LOGW("[SwapChainHook/Vk] Delaying ImGui init after %s: device=%p queue=%p swapchain=%p images=%zu",
+             reason, g_VkDevice, g_VkQueue, g_VkSwapchain, g_VkSwapImages.size());
+    return false;
+  }
+
+  if (!CreateVkImGuiResources()) {
+    LOGE("[SwapChainHook/Vk] CreateVkImGuiResources failed after %s", reason);
+    CleanupVkResources();
+    return false;
+  }
+
+  if (!InitImGuiVulkan()) {
+    LOGE("[SwapChainHook/Vk] InitImGuiVulkan failed after %s", reason);
+    CleanupVkResources();
+    return false;
+  }
+
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Vulkan Hooks
 // ---------------------------------------------------------------------------
+
+/**
+ * @brief vkCreateInstance hook — 捕获游戏自己的 VkInstance
+ */
+static VkResult VKAPI_CALL Hooked_vkCreateInstance(
+    const VkInstanceCreateInfo *pCreateInfo,
+    const VkAllocationCallbacks *pAllocator, VkInstance *pInstance) {
+  VkResult result = g_OrigVkCreateInstance(pCreateInfo, pAllocator, pInstance);
+  if (result == VK_SUCCESS && pInstance && *pInstance) {
+    g_VkInstance = *pInstance;
+    SCH_LOGI("[SwapChainHook/Vk] Captured instance=%p", g_VkInstance);
+  }
+  return result;
+}
 
 /**
  * @brief vkCreateDevice hook — 捕获 VkPhysicalDevice / VkDevice / 队列族
@@ -954,7 +1053,7 @@ static VkResult VKAPI_CALL Hooked_vkCreateDevice(
     const VkAllocationCallbacks *pAllocator, VkDevice *pDevice) {
   VkResult result =
       g_OrigVkCreateDevice(physicalDevice, pCreateInfo, pAllocator, pDevice);
-  if (result == VK_SUCCESS && pDevice) {
+  if (result == VK_SUCCESS && pDevice && *pDevice) {
     g_VkPhysDev = physicalDevice;
     g_VkDevice = *pDevice;
 
@@ -979,6 +1078,13 @@ static VkResult VKAPI_CALL Hooked_vkCreateDevice(
         g_VkQueueFamily = pCreateInfo->pQueueCreateInfos[0].queueFamilyIndex;
     }
 
+    if (g_VkQueueFamily != UINT32_MAX) {
+      g_OrigVkGetDeviceQueue(g_VkDevice, g_VkQueueFamily, 0, &g_VkQueue);
+      if (g_VkQueue)
+        SCH_LOGI("[SwapChainHook/Vk] Captured queue directly=%p  family=%u",
+                 g_VkQueue, g_VkQueueFamily);
+    }
+
     SCH_LOGI(
         "[SwapChainHook/Vk] Captured device=%p  physDev=%p  queueFamily=%u",
         g_VkDevice, g_VkPhysDev, g_VkQueueFamily);
@@ -994,10 +1100,12 @@ static void VKAPI_CALL Hooked_vkGetDeviceQueue(VkDevice device,
                                                uint32_t queueIndex,
                                                VkQueue *pQueue) {
   g_OrigVkGetDeviceQueue(device, queueFamilyIndex, queueIndex, pQueue);
-  if (pQueue && *pQueue && queueFamilyIndex == g_VkQueueFamily) {
+  if (pQueue && *pQueue && device == g_VkDevice &&
+      queueFamilyIndex == g_VkQueueFamily) {
     g_VkQueue = *pQueue;
     SCH_LOGI("[SwapChainHook/Vk] Captured queue=%p  family=%u", g_VkQueue,
              queueFamilyIndex);
+    TryInitializeVulkanOverlay("vkGetDeviceQueue");
   }
 }
 
@@ -1042,10 +1150,7 @@ static VkResult VKAPI_CALL Hooked_vkCreateSwapchainKHR(
            (int)g_VkSwapFormat);
 
   // 创建 ImGui 渲染资源
-  if (g_VkDevice != VK_NULL_HANDLE && g_VkQueue != VK_NULL_HANDLE) {
-    if (CreateVkImGuiResources())
-      InitImGuiVulkan();
-  }
+  TryInitializeVulkanOverlay("vkCreateSwapchainKHR");
 
   return result;
 }
@@ -1073,6 +1178,7 @@ static void VKAPI_CALL Hooked_vkDestroyDevice(
     CleanupVkResources();
     DestroyCurrentImGuiContext(false, false);
     g_ImGuiReady.store(false);
+    g_VkPhysDev = VK_NULL_HANDLE;
     g_VkDevice = VK_NULL_HANDLE;
     g_VkQueue = VK_NULL_HANDLE;
   }
@@ -1298,7 +1404,18 @@ void Install() {
       }
     }
 
-    // vkCreateDevice 是 instance-level 函数，用 vkGetInstanceProcAddr
+    // vkCreateInstance / vkCreateDevice 是 instance-level 函数，用 vkGetInstanceProcAddr
+    {
+      void *target =
+          (void *)vkGetInstanceProcAddr(helperInst, "vkCreateInstance");
+      if (target) {
+        if (!HookLifecycleManager::GetInstance().install(
+            "vkCreateInstance", target, (void *)Hooked_vkCreateInstance,
+            (void **)&g_OrigVkCreateInstance, "SwapChain"))
+          LOGE("[SwapChainHook] Failed to install hook: vkCreateInstance");
+      }
+    }
+
     {
       void *target =
           (void *)vkGetInstanceProcAddr(helperInst, "vkCreateDevice");
@@ -1372,6 +1489,11 @@ void Uninstall() {
 
   ResetGlesImGuiTracking();
   g_VkInitialized = false;
+  g_VkInstance = VK_NULL_HANDLE;
+  g_VkPhysDev = VK_NULL_HANDLE;
+  g_VkDevice = VK_NULL_HANDLE;
+  g_VkQueue = VK_NULL_HANDLE;
+  g_VkQueueFamily = UINT32_MAX;
   g_ImGuiReady.store(false);
 
   SCH_LOGI("[SwapChainHook] Uninstalled");

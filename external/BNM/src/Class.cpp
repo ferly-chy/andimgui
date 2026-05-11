@@ -41,18 +41,12 @@ TryGetClassWithoutImage(const std::string_view &_namespace,
   }
   fullName += _name;
 
-#ifdef BNM_ALLOW_MULTI_THREADING_SYNC
   {
     std::shared_lock lock(Internal::globalClassCacheMutex);
     if (auto it = Internal::globalClassCache.find(fullName);
         it != Internal::globalClassCache.end() && !it->second.empty())
       return it->second.front();
   }
-#else
-  if (auto it = Internal::globalClassCache.find(fullName);
-      it != Internal::globalClassCache.end() && !it->second.empty())
-    return it->second.front();
-#endif
 
   auto &assemblies = *Internal::il2cppMethods.Assembly$$GetAllAssemblies();
   std::vector<IL2CPP::Il2CppClass *> matches{};
@@ -65,9 +59,7 @@ TryGetClassWithoutImage(const std::string_view &_namespace,
   }
 
   if (!matches.empty()) {
-#ifdef BNM_ALLOW_MULTI_THREADING_SYNC
     std::unique_lock writeLock(Internal::globalClassCacheMutex);
-#endif
     // Keep all matches so image-less lookup does not permanently hide assembly
     // collisions.
     Internal::globalClassCache[fullName] = matches;
@@ -81,15 +73,20 @@ Class::Class(const std::string_view &_namespace,
              const std::string_view &_name) {
   if (_data = TryGetClassWithoutImage(_namespace, _name); _data)
     return;
-  BNM_LOG_WARN(DBG_BNM_MSG_Class_Constructor_NotFound, _namespace.data(),
-               _name.data());
+  auto namespaceStr = std::string(_namespace);
+  auto nameStr = std::string(_name);
+  BNM_LOG_WARN(DBG_BNM_MSG_Class_Constructor_NotFound, namespaceStr.c_str(),
+               nameStr.c_str());
 }
 
 Class::Class(const std::string_view &_namespace, const std::string_view &_name,
              const BNM::Image &image) {
   if (!image) {
-    BNM_LOG_WARN(DBG_BNM_MSG_Class_Constructor_Image_Warn, image.str().data(),
-                 _namespace.data(), _name.data());
+    auto imageStr = std::string(image.str());
+    auto namespaceStr = std::string(_namespace);
+    auto nameStr = std::string(_name);
+    BNM_LOG_WARN(DBG_BNM_MSG_Class_Constructor_Image_Warn, imageStr.c_str(),
+                 namespaceStr.c_str(), nameStr.c_str());
     _data = nullptr;
     return;
   }
@@ -97,8 +94,11 @@ Class::Class(const std::string_view &_namespace, const std::string_view &_name,
   if (_data = Internal::TryGetClassInImage(image, _namespace, _name); _data)
     return;
 
-  BNM_LOG_WARN(DBG_BNM_MSG_Class_Constructor_Image_NotFound, image.str().data(),
-               _namespace.data(), _name.data());
+  auto imageStr = std::string(image.str());
+  auto namespaceStr = std::string(_namespace);
+  auto nameStr = std::string(_name);
+  BNM_LOG_WARN(DBG_BNM_MSG_Class_Constructor_Image_NotFound, imageStr.c_str(),
+               namespaceStr.c_str(), nameStr.c_str());
 }
 
 std::span<const BNM::IL2CPP::MethodInfo *> Class::GetMethodsSpan() const {
@@ -267,17 +267,13 @@ MethodBase Class::GetMethod(const std::string_view &name,
   fullName += '#';
   fullName += std::to_string(parameters);
 
-#ifdef BNM_ALLOW_MULTI_THREADING_SYNC
   std::shared_lock lock(Internal::methodCacheMutex);
-#endif
   if (auto it = Internal::methodCache.find(_data);
       it != Internal::methodCache.end()) {
     if (auto it2 = it->second.find(fullName); it2 != it->second.end())
       return it2->second;
   }
-#ifdef BNM_ALLOW_MULTI_THREADING_SYNC
   lock.unlock();
-#endif
 
   auto method = Internal::IterateMethods(
       *this, [&name, &parameters](IL2CPP::MethodInfo *method) {
@@ -286,15 +282,14 @@ MethodBase Class::GetMethod(const std::string_view &name,
       });
 
   if (method != nullptr) {
-#ifdef BNM_ALLOW_MULTI_THREADING_SYNC
     std::unique_lock writeLock(Internal::methodCacheMutex);
-#endif
     Internal::methodCache[_data][fullName] = method;
     return method;
   }
 
+  auto methodName = std::string(name);
   BNM_LOG_WARN(DBG_BNM_MSG_Class_GetMethod_Count_NotFound, _data->namespaze,
-               _data->name, name.data(), parameters);
+               _data->name, methodName.c_str(), parameters);
   return {};
 }
 
@@ -318,17 +313,13 @@ MethodBase Class::GetMethod(
   }
   fullName += ")";
 
-#ifdef BNM_ALLOW_MULTI_THREADING_SYNC
   std::shared_lock lock(Internal::methodCacheMutex);
-#endif
   if (auto it = Internal::methodCache.find(_data);
       it != Internal::methodCache.end()) {
     if (auto it2 = it->second.find(fullName); it2 != it->second.end())
       return it2->second;
   }
-#ifdef BNM_ALLOW_MULTI_THREADING_SYNC
   lock.unlock();
-#endif
 
   auto method = Internal::IterateMethods(
       *this, [&name, &parameters, &parameterNames](IL2CPP::MethodInfo *method) {
@@ -342,15 +333,14 @@ MethodBase Class::GetMethod(
       });
 
   if (method != nullptr) {
-#ifdef BNM_ALLOW_MULTI_THREADING_SYNC
     std::unique_lock writeLock(Internal::methodCacheMutex);
-#endif
     Internal::methodCache[_data][fullName] = method;
     return method;
   }
 
+  auto methodName = std::string(name);
   BNM_LOG_WARN(DBG_BNM_MSG_Class_GetMethod_Names_NotFound, _data->namespaze,
-               _data->name, name.data(), parameters);
+               _data->name, methodName.c_str(), parameters);
   return {};
 }
 
@@ -373,17 +363,13 @@ MethodBase Class::GetMethod(
   }
   fullName += ")";
 
-#ifdef BNM_ALLOW_MULTI_THREADING_SYNC
   std::shared_lock lock(Internal::methodCacheMutex);
-#endif
   if (auto it = Internal::methodCache.find(_data);
       it != Internal::methodCache.end()) {
     if (auto it2 = it->second.find(fullName); it2 != it->second.end())
       return it2->second;
   }
-#ifdef BNM_ALLOW_MULTI_THREADING_SYNC
   lock.unlock();
-#endif
 
   auto method = Internal::IterateMethods(
       *this, [&name, parameters, &parameterTypes](IL2CPP::MethodInfo *method) {
@@ -404,15 +390,14 @@ MethodBase Class::GetMethod(
       });
 
   if (method != nullptr) {
-#ifdef BNM_ALLOW_MULTI_THREADING_SYNC
     std::unique_lock writeLock(Internal::methodCacheMutex);
-#endif
     Internal::methodCache[_data][fullName] = method;
     return method;
   }
 
+  auto methodName = std::string(name);
   BNM_LOG_WARN(DBG_BNM_MSG_Class_GetMethod_Types_NotFound, _data->namespaze,
-               _data->name, name.data(), parameters);
+               _data->name, methodName.c_str(), parameters);
   return {};
 }
 
@@ -432,8 +417,9 @@ PropertyBase Class::GetProperty(const std::string_view &name) const {
     curClass = curClass->parent;
   } while (curClass);
 
+  auto propertyName = std::string(name);
   BNM_LOG_WARN(DBG_BNM_MSG_Class_GetProperty_NotFound, str().c_str(),
-               name.data());
+               propertyName.c_str());
   return {};
 }
 
@@ -457,8 +443,9 @@ PropertyBase Class::GetProperty(const std::string_view &name,
     curClass = curClass->parent;
   } while (curClass);
 
+  auto propertyName = std::string(name);
   BNM_LOG_WARN(DBG_BNM_MSG_Class_GetProperty_NotFound, str().c_str(),
-               name.data());
+               propertyName.c_str());
   return {};
 }
 
@@ -478,8 +465,9 @@ Class Class::GetInnerClass(const std::string_view &name) const {
     curClass = curClass->parent;
   } while (curClass);
 
+  auto innerClassName = std::string(name);
   BNM_LOG_WARN(DBG_BNM_MSG_Class_GetInnerClass_NotFound, _data->namespaze,
-               _data->name, name.data());
+               _data->name, innerClassName.c_str());
   return {};
 }
 
@@ -501,8 +489,9 @@ FieldBase Class::GetField(const std::string_view &name) const {
     curClass = curClass->parent;
   } while (curClass);
 
+  auto fieldName = std::string(name);
   BNM_LOG_WARN(DBG_BNM_MSG_Class_GetField_NotFound, _data->namespaze,
-               _data->name, name.data());
+               _data->name, fieldName.c_str());
   return {};
 }
 
@@ -524,8 +513,9 @@ EventBase Class::GetEvent(const std::string_view &name) const {
     curClass = curClass->parent;
   } while (curClass);
 
+  auto eventName = std::string(name);
   BNM_LOG_WARN(DBG_BNM_MSG_Class_GetEvent_NotFound, _data->namespaze,
-               _data->name, name.data());
+               _data->name, eventName.c_str());
   return {};
 }
 
@@ -621,11 +611,7 @@ IL2CPP::Il2CppObject *Class::CreateNewInstance() const {
     BNM_LOG_WARN(DBG_BNM_MSG_Class_CreateNewInstance_Abstract_Warn,
                  str().c_str());
 
-  auto obj = Internal::il2cppMethods.il2cpp_object_new(_data);
-  if (obj)
-    memset((char *)obj + sizeof(IL2CPP::Il2CppObject), 0,
-           _data->instance_size - sizeof(IL2CPP::Il2CppObject));
-  return obj;
+  return Internal::il2cppMethods.il2cpp_object_new(_data);
 }
 
 // Try initializing the class if it is alive

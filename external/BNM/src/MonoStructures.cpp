@@ -1,6 +1,6 @@
 #include <new>
 
-#include <utf8.h>
+#include <simdutf.h>
 
 #include <BNM/BasicMonoStructures.hpp>
 #include <BNM/Class.hpp>
@@ -8,10 +8,16 @@
 
 static std::string Utf16ToUtf8(BNM::IL2CPP::Il2CppChar *utf16String,
                                size_t length) {
+  auto *input = reinterpret_cast<const char16_t *>(utf16String);
+  auto utf8Length =
+      simdutf::utf8_length_from_utf16le_with_replacement(input, length);
+
   std::string utf8String{};
-  utf8String.reserve(length);
-  utf8::unchecked::utf16to8(utf16String, utf16String + length,
-                            std::back_inserter(utf8String));
+  utf8String.resize(utf8Length.count);
+
+  auto written = simdutf::convert_utf16le_to_utf8_with_replacement(
+      input, length, utf8String.data());
+  utf8String.resize(written);
   return utf8String;
 }
 

@@ -10,16 +10,12 @@ using namespace BNM;
 
 void Internal::Load() {
   SetupLogging();
-#ifdef BNM_ALLOW_MULTI_THREADING_SYNC
   std::unique_lock lock(initMutex);
-#endif
   if (states.loading || states.state)
     return;
   states.loading = true;
 
-#ifdef BNM_ALLOW_MULTI_THREADING_SYNC
   std::shared_lock loadingLock(loadingMutex);
-#endif
 
   // Load BNM
   if (!SetupBNM()) {
@@ -46,7 +42,11 @@ void Internal::Load() {
   states.loading = false;
 
   // Call all events after loading il2cpp
-  auto events = onIl2CppLoaded;
+  BNM::ForwardList<void (*)()> events;
+  {
+    std::lock_guard eventsLock(onLoadedEventsMutex);
+    events = onIl2CppLoaded;
+  }
   if (!events.IsEmpty()) {
     auto current = events.lastElement->next;
     do {
@@ -100,6 +100,7 @@ static bool CheckHandle(void *handle) {
 bool Loading::TryLoadByJNI(JNIEnv *env, jobject context) {
   Internal::SetupLogging();
   bool result = false;
+  bool deleteContextLocalRef = false;
 
   if (!env || Internal::il2cppLibraryHandle || Internal::states.state)
     return result;
@@ -117,6 +118,7 @@ bool Loading::TryLoadByJNI(JNIEnv *env, jobject context) {
         BNM_OBFUSCATE_TMP("()Landroid/app/ActivityThread;"));
     if (env->ExceptionCheck() || !currentActivityThreadMethod) {
       env->ExceptionClear();
+      env->DeleteLocalRef(activityThread);
       return false;
     }
 
@@ -124,6 +126,7 @@ bool Loading::TryLoadByJNI(JNIEnv *env, jobject context) {
         activityThread, currentActivityThreadMethod);
     if (env->ExceptionCheck() || !currentActivityThread) {
       env->ExceptionClear();
+      env->DeleteLocalRef(activityThread);
       return false;
     }
 
@@ -133,16 +136,19 @@ bool Loading::TryLoadByJNI(JNIEnv *env, jobject context) {
     if (env->ExceptionCheck() || !getApplicationMethod) {
       env->ExceptionClear();
       env->DeleteLocalRef(currentActivityThread);
+      env->DeleteLocalRef(activityThread);
       return false;
     }
 
     context =
         env->CallObjectMethod(currentActivityThread, getApplicationMethod);
     env->DeleteLocalRef(currentActivityThread);
+    env->DeleteLocalRef(activityThread);
     if (env->ExceptionCheck() || !context) {
       env->ExceptionClear();
       return false;
     }
+    deleteContextLocalRef = true;
   }
 
   jclass contextClass = env->GetObjectClass(context);
@@ -152,6 +158,8 @@ bool Loading::TryLoadByJNI(JNIEnv *env, jobject context) {
   if (env->ExceptionCheck() || !getApplicationInfoMethod) {
     env->ExceptionClear();
     env->DeleteLocalRef(contextClass);
+    if (deleteContextLocalRef)
+      env->DeleteLocalRef(context);
     return false;
   }
 
@@ -160,6 +168,8 @@ bool Loading::TryLoadByJNI(JNIEnv *env, jobject context) {
   env->DeleteLocalRef(contextClass);
   if (env->ExceptionCheck() || !applicationInfo) {
     env->ExceptionClear();
+    if (deleteContextLocalRef)
+      env->DeleteLocalRef(context);
     return false;
   }
 
@@ -170,6 +180,8 @@ bool Loading::TryLoadByJNI(JNIEnv *env, jobject context) {
     env->ExceptionClear();
     env->DeleteLocalRef(applicationInfo);
     env->DeleteLocalRef(applicationInfoClass);
+    if (deleteContextLocalRef)
+      env->DeleteLocalRef(context);
     return false;
   }
 
@@ -187,6 +199,8 @@ bool Loading::TryLoadByJNI(JNIEnv *env, jobject context) {
     env->ExceptionClear();
     env->DeleteLocalRef(applicationInfo);
     env->DeleteLocalRef(applicationInfoClass);
+    if (deleteContextLocalRef)
+      env->DeleteLocalRef(context);
     return false;
   }
 
@@ -195,6 +209,8 @@ bool Loading::TryLoadByJNI(JNIEnv *env, jobject context) {
     env->ExceptionClear();
     env->DeleteLocalRef(applicationInfo);
     env->DeleteLocalRef(applicationInfoClass);
+    if (deleteContextLocalRef)
+      env->DeleteLocalRef(context);
     return false;
   }
 
@@ -203,6 +219,8 @@ bool Loading::TryLoadByJNI(JNIEnv *env, jobject context) {
     env->DeleteLocalRef(applicationInfo);
     env->DeleteLocalRef(applicationInfoClass);
     env->DeleteLocalRef(jDir);
+    if (deleteContextLocalRef)
+      env->DeleteLocalRef(context);
     return false;
   }
   auto cDir = std::string_view(cDirChars);
@@ -241,6 +259,8 @@ bool Loading::TryLoadByJNI(JNIEnv *env, jobject context) {
 FINISH:
   env->ReleaseStringUTFChars(jDir, cDirChars);
   env->DeleteLocalRef(jDir);
+  if (deleteContextLocalRef)
+    env->DeleteLocalRef(context);
   return result;
 }
 
@@ -297,6 +317,13 @@ void Internal::LateInit(void *il2cpp_class_from_il2cpp_type_addr) {
   auto from_il2cpp_type = AssemblerUtils::FindNextJump(
       (BNM_PTR)il2cpp_class_from_il2cpp_type_addr, count);
 
+  if (!from_il2cpp_type || !IsAllocated((void *)from_il2cpp_type)) {
+    BNM_LOG_WARN("BNM: Failed to resolve valid Class::FromIl2CppType hook "
+                 "target for late init (%p).",
+                 (void *)from_il2cpp_type);
+    return;
+  }
+
   Internal::BNM_Class$$FromIl2CppType_origin =
       ::BasicHook(from_il2cpp_type, Internal::BNM_Class$$FromIl2CppType,
                   Internal::old_BNM_Class$$FromIl2CppType);
@@ -336,6 +363,10 @@ bool Internal::SetupBNM() {
         return 0;
     }
     return current;
+  };
+
+  auto IsValidResolvedAddress = [](BNM_PTR address) -> bool {
+    return address && IsAllocated((void *)address);
   };
 
   //! il2cpp::vm::Class::Init
@@ -435,12 +466,17 @@ bool Internal::SetupBNM() {
     // il2cpp::icalls::mscorlib::System::Reflection::Assembly::GetTypes ->
     // il2cpp::icalls::mscorlib::System::Module::InternalGetTypes ->
     // il2cpp::vm::Image::GetTypes
+    auto image_get_types = ResolveNestedJump(GetTypesAdr, 1, count);
+    image_get_types = ResolveNestedJump(image_get_types, 1, sCount);
+    image_get_types = ResolveNestedJump(image_get_types, 1, count);
+    if (!IsValidResolvedAddress(image_get_types)) {
+      BNM_LOG_ERR("BNM: Failed to resolve valid Image::GetTypes address "
+                  "(%p). Cannot proceed.",
+                  (void *)image_get_types);
+      return false;
+    }
     il2cppMethods.orig_Image$$GetTypes =
-        (decltype(il2cppMethods.orig_Image$$GetTypes))
-            AssemblerUtils::FindNextJump(
-                AssemblerUtils::FindNextJump(
-                    AssemblerUtils::FindNextJump(GetTypesAdr, count), sCount),
-                count);
+        (decltype(il2cppMethods.orig_Image$$GetTypes))image_get_types;
 
     BNM_LOG_DEBUG(DBG_BNM_MSG_SetupBNM_Image_GetTypes,
                   OffsetInLib((void *)il2cppMethods.orig_Image$$GetTypes));
@@ -457,6 +493,12 @@ bool Internal::SetupBNM() {
       AssemblerUtils::FindNextJump((BNM_PTR)GetIl2CppMethod(BNM_OBFUSCATE_TMP(
                                        BNM_IL2CPP_API_il2cpp_class_from_type)),
                                    count);
+  if (!IsValidResolvedAddress(from_type_adr)) {
+    BNM_LOG_ERR("BNM: Failed to resolve valid Class::FromIl2CppType hook "
+                "target (%p). Cannot proceed.",
+                (void *)from_type_adr);
+    return false;
+  }
   ::BasicHook(from_type_adr, ClassesManagement::Class$$FromIl2CppType,
               ClassesManagement::old_Class$$FromIl2CppType);
   BNM_LOG_DEBUG(DBG_BNM_MSG_SetupBNM_Class_FromIl2CppType,
@@ -470,6 +512,12 @@ bool Internal::SetupBNM() {
       (BNM_PTR)GetIl2CppMethod(BNM_OBFUSCATE_TMP(
           BNM_IL2CPP_API_il2cpp_type_get_class_or_element_class)),
       count);
+  if (!IsValidResolvedAddress(type_get_class_adr)) {
+    BNM_LOG_ERR("BNM: Failed to resolve valid Type::GetClassOrElementClass "
+                "hook target (%p). Cannot proceed.",
+                (void *)type_get_class_adr);
+    return false;
+  }
   ::BasicHook(type_get_class_adr,
               ClassesManagement::Type$$GetClassOrElementClass,
               ClassesManagement::old_Type$$GetClassOrElementClass);
@@ -485,6 +533,12 @@ bool Internal::SetupBNM() {
       AssemblerUtils::FindNextJump(
           (BNM_PTR)il2cppMethods.il2cpp_class_from_name, count),
       count);
+  if (!IsValidResolvedAddress(from_name_adr)) {
+    BNM_LOG_ERR("BNM: Failed to resolve valid Image::ClassFromName hook "
+                "target (%p). Cannot proceed.",
+                (void *)from_name_adr);
+    return false;
+  }
   ::BasicHook(from_name_adr, ClassesManagement::Class$$FromName,
               ClassesManagement::old_Class$$FromName);
   BNM_LOG_DEBUG(DBG_BNM_MSG_SetupBNM_Image_FromName,
@@ -500,6 +554,12 @@ bool Internal::SetupBNM() {
       AssemblerUtils::FindNextJump(
           (BNM_PTR)il2cppMethods.il2cpp_assembly_get_image, count),
       count);
+  if (!IsValidResolvedAddress(GetImageFromIndexOffset)) {
+    BNM_LOG_ERR("BNM: Failed to resolve valid MetadataCache::GetImageFromIndex "
+                "hook target (%p). Cannot proceed.",
+                (void *)GetImageFromIndexOffset);
+    return false;
+  }
   ::BasicHook(GetImageFromIndexOffset, ClassesManagement::new_GetImageFromIndex,
               ClassesManagement::old_GetImageFromIndex);
   BNM_LOG_DEBUG(DBG_BNM_MSG_SetupBNM_MetadataCache_GetImageFromIndex,
@@ -514,6 +574,12 @@ bool Internal::SetupBNM() {
           il2cppLibraryHandle,
           BNM_OBFUSCATE_TMP(BNM_IL2CPP_API_il2cpp_domain_assembly_open)),
       count);
+  if (!IsValidResolvedAddress(AssemblyLoadOffset)) {
+    BNM_LOG_ERR("BNM: Failed to resolve valid Assembly::Load hook target "
+                "(%p). Cannot proceed.",
+                (void *)AssemblyLoadOffset);
+    return false;
+  }
   ::BasicHook(AssemblyLoadOffset, ClassesManagement::Assembly$$Load, nullptr);
   BNM_LOG_DEBUG(DBG_BNM_MSG_SetupBNM_Assembly_Load,
                 OffsetInLib((void *)AssemblyLoadOffset));
@@ -527,9 +593,15 @@ bool Internal::SetupBNM() {
   // il2cpp::vm::Assembly::GetAllAssemblies
   auto adr = (BNM_PTR)GetIl2CppMethod(
       BNM_OBFUSCATE_TMP(BNM_IL2CPP_API_il2cpp_domain_get_assemblies));
+  auto get_all_assemblies = AssemblerUtils::FindNextJump(adr, count);
+  if (!IsValidResolvedAddress(get_all_assemblies)) {
+    BNM_LOG_ERR("BNM: Failed to resolve valid Assembly::GetAllAssemblies "
+                "address (%p). Cannot proceed.",
+                (void *)get_all_assemblies);
+    return false;
+  }
   il2cppMethods.Assembly$$GetAllAssemblies =
-      (std::vector<IL2CPP::Il2CppAssembly *> *
-       (*)())(AssemblerUtils::FindNextJump(adr, count));
+      (std::vector<IL2CPP::Il2CppAssembly *> * (*)()) get_all_assemblies;
   BNM_LOG_DEBUG(DBG_BNM_MSG_SetupBNM_Assembly_GetAllAssemblies,
                 OffsetInLib((void *)il2cppMethods.Assembly$$GetAllAssemblies));
 
@@ -655,8 +727,13 @@ bool Internal::SetupBNM() {
 }
 
 void Loading::AddOnLoadedEvent(void (*event)()) {
-  if (event)
-    Internal::onIl2CppLoaded.Add(event);
+  if (!event)
+    return;
+  std::lock_guard lock(Internal::onLoadedEventsMutex);
+  Internal::onIl2CppLoaded.Add(event);
 }
 
-void Loading::ClearOnLoadedEvents() { Internal::onIl2CppLoaded.Clear(); }
+void Loading::ClearOnLoadedEvents() {
+  std::lock_guard lock(Internal::onLoadedEventsMutex);
+  Internal::onIl2CppLoaded.Clear();
+}

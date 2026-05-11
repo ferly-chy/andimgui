@@ -6,17 +6,17 @@ project(BNM
     LANGUAGES CXX
 )
 
-# Configuration Options
+#Configuration Options
 option(BNM_LINK_LOG "Link against Android log library" ON)
 option(BNM_ENABLE_LTO "Enable Link Time Optimization" ON)
 option(BNM_HARDENING "Enable security hardening flags" ON)
 
-# C++ Standard Configuration
+#C++ Standard Configuration
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Source and Header Files
+#Source and Header Files
 file(GLOB_RECURSE BNM_SOURCES src/*.cpp)
 file(GLOB_RECURSE BNM_HEADERS include/BNM/*.hpp)
 
@@ -29,10 +29,18 @@ target_include_directories(BNM
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/external/include>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/external/spdlog/include>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/external/simdutf/include>
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/external
-        ${CMAKE_CURRENT_SOURCE_DIR}/external/utf8
         ${CMAKE_CURRENT_SOURCE_DIR}/src/private
+)
+
+target_sources(BNM PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/simdutf/src/simdutf.cpp
+)
+
+target_include_directories(BNM SYSTEM PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/simdutf/src
 )
 
 # Compiler Flags and Modern Features

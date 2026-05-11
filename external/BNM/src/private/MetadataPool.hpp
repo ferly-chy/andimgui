@@ -44,7 +44,14 @@ private:
       // Allocate new block if requested size is larger than remaining space
       size_t allocSize = (size > BLOCK_SIZE) ? size : BLOCK_SIZE;
       uint8_t *newData = (uint8_t *)BNM_malloc(allocSize);
-      _blocks.push_back({newData, 0});
+      if (!newData)
+        return nullptr;
+      try {
+        _blocks.push_back({newData, 0});
+      } catch (...) {
+        BNM_free(newData);
+        return nullptr;
+      }
     }
 
     Block &current = _blocks.back();

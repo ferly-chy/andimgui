@@ -29,12 +29,11 @@ ClassCacheMap classCache{};
 MethodCacheMap methodCache{};
 GlobalClassCacheMap globalClassCache{};
 
-#ifdef BNM_ALLOW_MULTI_THREADING_SYNC
 std::shared_mutex imageCacheMutex{};
 std::shared_mutex classCacheMutex{};
 std::shared_mutex methodCacheMutex{};
 std::shared_mutex globalClassCacheMutex{};
-#endif
+std::mutex onLoadedEventsMutex{};
 
 void *bnmImageSentinel = (void *)&bnmImageSentinel;
 
@@ -45,16 +44,12 @@ void *BNM_Class$$FromIl2CppType_origin{};
 IL2CPP::Il2CppClass *(*old_BNM_Class$$FromIl2CppType)(
     IL2CPP::Il2CppReflectionType *){};
 
-#ifdef BNM_ALLOW_MULTI_THREADING_SYNC
 std::shared_mutex loadingMutex{};
 std::recursive_mutex initMutex{};
-#endif
 
 #ifdef BNM_CLASSES_MANAGEMENT
 namespace ClassesManagement {
-#ifdef BNM_ALLOW_MULTI_THREADING_SYNC
 std::shared_mutex classesFindAccessMutex{};
-#endif
 std::vector<MANAGEMENT_STRUCTURES::CustomClass *> &
 GetClassesManagementVector() {
   static std::vector<MANAGEMENT_STRUCTURES::CustomClass *> vector;
@@ -76,22 +71,16 @@ BNMClassesMap bnmClassesMap{};
 
 // Track allocations made with BNM_malloc during runtime class creation
 std::vector<void *> allocatedMemory{};
-#ifdef BNM_ALLOW_MULTI_THREADING_SYNC
 std::mutex memoryTrackerMutex{};
-#endif
 void TrackAllocation(void *ptr) {
   if (!ptr)
     return;
-#ifdef BNM_ALLOW_MULTI_THREADING_SYNC
   std::lock_guard lock(memoryTrackerMutex);
-#endif
   allocatedMemory.push_back(ptr);
 }
 
 void FreeAllAllocations() {
-#ifdef BNM_ALLOW_MULTI_THREADING_SYNC
   std::lock_guard lock(memoryTrackerMutex);
-#endif
   for (auto ptr : allocatedMemory)
     BNM_free(ptr);
   allocatedMemory.clear();
@@ -103,16 +92,12 @@ void FreeAllAllocations() {
 using namespace BNM;
 
 IL2CPP::Il2CppImage *Internal::TryGetImage(const std::string_view &_name) {
-#ifdef BNM_ALLOW_MULTI_THREADING_SYNC
   std::shared_lock lock(Internal::imageCacheMutex);
-#endif
   if (auto it = Internal::imageCache.find(_name);
       it != Internal::imageCache.end())
     return it->second;
 
-#ifdef BNM_ALLOW_MULTI_THREADING_SYNC
   lock.unlock();
-#endif
 
   auto &assemblies = *Internal::il2cppMethods.Assembly$$GetAllAssemblies();
 
@@ -122,9 +107,7 @@ IL2CPP::Il2CppImage *Internal::TryGetImage(const std::string_view &_name) {
     if (!Internal::CompareImageName(currentImage, _name))
       continue;
 
-#ifdef BNM_ALLOW_MULTI_THREADING_SYNC
     std::unique_lock writeLock(Internal::imageCacheMutex);
-#endif
     Internal::imageCache[std::string(_name)] = currentImage;
     return currentImage;
   }
@@ -151,7 +134,6 @@ Internal::TryGetClassInImage(const IL2CPP::Il2CppImage *image,
   len += _name.size();
   std::string_view fullName(fullNameBuf, len);
 
-#ifdef BNM_ALLOW_MULTI_THREADING_SYNC
   {
     std::shared_lock lock(Internal::classCacheMutex);
     if (auto it = Internal::classCache.find(image);
@@ -160,13 +142,6 @@ Internal::TryGetClassInImage(const IL2CPP::Il2CppImage *image,
         return it2->second;
     }
   }
-#else
-  if (auto it = Internal::classCache.find(image);
-      it != Internal::classCache.end()) {
-    if (auto it2 = it->second.find(fullName); it2 != it->second.end())
-      return it2->second;
-  }
-#endif
 
   IL2CPP::Il2CppClass *result = nullptr;
 
@@ -215,9 +190,7 @@ Internal::TryGetClassInImage(const IL2CPP::Il2CppImage *image,
   }
 
   if (result) {
-#ifdef BNM_ALLOW_MULTI_THREADING_SYNC
     std::unique_lock writeLock(Internal::classCacheMutex);
-#endif
     Internal::classCache[image][std::string(fullName)] = result;
   }
 

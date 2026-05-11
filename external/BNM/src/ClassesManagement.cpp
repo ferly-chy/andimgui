@@ -2,9 +2,9 @@
 
 #ifdef BNM_CLASSES_MANAGEMENT
 
-#include "private/MetadataPool.hpp"
 #include <Internals.hpp>
 #include <atomic>
+#include <new>
 
 static inline void SafePatchVTable(BNM::IL2CPP::VirtualInvokeData *vtable,
                                    void *newMethodPtr,
@@ -25,6 +25,18 @@ static inline void SafePatchVTable(BNM::IL2CPP::VirtualInvokeData *vtable,
 #define BNM_CLASS_ALLOCATED_HIERARCHY_FLAG 0x08000000
 
 using namespace BNM;
+
+static bool LogMetadataAllocationFailure(const char *what, size_t size) {
+  BNM_LOG_ERR("BNM: Failed to allocate %zu bytes for %s.", size, what);
+  return false;
+}
+
+static bool CheckMetadataAllocation(const void *ptr, const char *what,
+                                    size_t size) {
+  if (ptr)
+    return true;
+  return LogMetadataAllocationFailure(what, size);
+}
 
 namespace BNM::Internal::ClassesManagement {
 struct MetadataTracker {
@@ -48,16 +60,20 @@ thread_local MetadataTracker *currentTracker = nullptr;
 } // namespace BNM::Internal::ClassesManagement
 
 static inline void *BNM_malloc_tracked(size_t size) {
-  // Use Pool Allocator for metadata objects instead of individual mallocs
-  return BNM::Internal::MetadataPool::Allocate(size);
+  // Runtime metadata buffers are individually replaceable in several paths
+  // (methods, fields, nested type lists, hierarchy arrays). Allocate them with
+  // the regular allocator so existing BNM_free/TrackAllocation ownership
+  // remains valid. Pool sub-allocations must not be freed individually.
+  void *ptr = BNM_malloc(size);
+  if (BNM::Internal::ClassesManagement::currentTracker)
+    BNM::Internal::ClassesManagement::currentTracker->Track(ptr);
+  return ptr;
 }
 #define BNM_MALLOC_TRACKED(size) BNM_malloc_tracked(size)
 
 void MANAGEMENT_STRUCTURES::AddClass(CustomClass *_class) {
-#ifdef BNM_ALLOW_MULTI_THREADING_SYNC
   std::unique_lock lock(
       BNM::Internal::ClassesManagement::classesFindAccessMutex);
-#endif
   BNM::Internal::ClassesManagement::GetClassesManagementVector().push_back(
       _class);
 }
@@ -110,15 +126,18 @@ static bool HasInterface(IL2CPP::Il2CppClass *parent,
 static void SetupTypes(IL2CPP::Il2CppClass *target);
 
 void BNM::Internal::ClassesManagement::ProcessCustomClasses() {
-  auto &vector = GetClassesManagementVector();
-  if (vector.empty())
-    return;
+  std::vector<MANAGEMENT_STRUCTURES::CustomClass *> classesToProcess;
+  {
+    std::unique_lock lock(classesFindAccessMutex);
+    auto &vector = GetClassesManagementVector();
+    if (vector.empty())
+      return;
 
-  for (auto customClass : vector)
+    classesToProcess.swap(vector);
+  }
+
+  for (auto customClass : classesToProcess)
     BNM::ClassesManagement::ProcessClassRuntime(customClass);
-
-  vector.clear();
-  vector.shrink_to_fit();
 }
 
 void ClassesManagement::ProcessClassRuntime(
@@ -184,8 +203,9 @@ static size_t GetTypeAlignment(const IL2CPP::Il2CppType *type) {
 
 static void ModifyClass(MANAGEMENT_STRUCTURES::CustomClass *customClass,
                         Class target) {
+  auto targetStr = target.str();
   BNM_LOG_DEBUG(DBG_BNM_MSG_ClassesManagement_ModifyClasses_Target,
-                target.str().data());
+                targetStr.c_str());
 
   auto klass = target._data;
 
@@ -216,16 +236,17 @@ static void ModifyClass(MANAGEMENT_STRUCTURES::CustomClass *customClass,
 
       if (!isHooked)
         methodsToAdd.push_back(method->myInfo);
+      auto methodName = std::string(method->_name);
       BNM_LOG_DEBUG_IF(
           isHooked, DBG_BNM_MSG_ClassesManagement_ModifyClasses_Hooked_Method,
           method->_isStatic == 1 ? DBG_BNM_MSG_ClassesManagement_Method_Static
                                  : "",
-          method->_name.data(), paramCount);
+          methodName.c_str(), paramCount);
       BNM_LOG_DEBUG_IF(
           !isHooked, DBG_BNM_MSG_ClassesManagement_ModifyClasses_Added_Method,
           method->_isStatic == 1 ? DBG_BNM_MSG_ClassesManagement_Method_Static
                                  : "",
-          method->_name.data(), paramCount);
+          methodName.c_str(), paramCount);
       BNM_LOG_DEBUG_IF(
           method->_origin && method->_origin != method->myInfo,
           DBG_BNM_MSG_ClassesManagement_ModifyClasses_Overridden_Method,
@@ -297,8 +318,9 @@ static void ModifyClass(MANAGEMENT_STRUCTURES::CustomClass *customClass,
       currentAddress += field->_size;
 
       newField++;
+      auto fieldName = std::string(field->_name);
       BNM_LOG_DEBUG(DBG_BNM_MSG_ClassesManagement_ModifyClasses_Added_Field,
-                    field->_name.data());
+                    fieldName.c_str());
     }
 
     // Track old array for cleanup at shutdown if it was allocated by us
@@ -402,11 +424,12 @@ static void CreateClass(MANAGEMENT_STRUCTURES::CustomClass *customClass,
 
     method->myInfo = ProcessCustomMethod(method, {});
 
+    auto methodName = std::string(method->_name);
     BNM_LOG_DEBUG(DBG_BNM_MSG_ClassesManagement_CreateClass_Added_Method,
                   method->_isStatic == 1
                       ? DBG_BNM_MSG_ClassesManagement_Method_Static
                       : "",
-                  method->_name.data(), method->_parameterTypes.size());
+                  methodName.c_str(), method->_parameterTypes.size());
 
     // Replacing non-static methods in the virtual methods table
     if (!method->_isStatic)
@@ -451,23 +474,29 @@ static void CreateClass(MANAGEMENT_STRUCTURES::CustomClass *customClass,
     methods[i] = method->myInfo;
   }
 
-  auto klass = customClass->myClass = (IL2CPP::Il2CppClass *)BNM_MALLOC_TRACKED(
-      sizeof(IL2CPP::Il2CppClass) +
-      newVTable.size() * sizeof(IL2CPP::VirtualInvokeData));
-  memset(klass, 0,
-         sizeof(IL2CPP::Il2CppClass) +
-             newVTable.size() * sizeof(IL2CPP::VirtualInvokeData));
+  const auto klassSize = sizeof(IL2CPP::Il2CppClass) +
+                         newVTable.size() * sizeof(IL2CPP::VirtualInvokeData);
+  auto klass = customClass->myClass =
+      (IL2CPP::Il2CppClass *)BNM_MALLOC_TRACKED(klassSize);
+  if (!CheckMetadataAllocation(klass, "custom class metadata", klassSize))
+    return;
+  memset(klass, 0, klassSize);
 
   klass->image = image;
 
   auto len = strlen(classInfo._name);
   klass->name = (char *)BNM_MALLOC_TRACKED(len + 1);
+  if (!CheckMetadataAllocation(klass->name, "custom class name", len + 1))
+    return;
   memcpy((void *)klass->name, classInfo._name, len);
   ((char *)klass->name)[len] = 0;
 
   if (!owner && classInfo._namespace) {
     len = strlen(classInfo._namespace);
     klass->namespaze = (char *)BNM_MALLOC_TRACKED(len + 1);
+    if (!CheckMetadataAllocation(klass->namespaze, "custom class namespace",
+                                 len + 1))
+      return;
     memcpy((void *)klass->namespaze, classInfo._namespace, len);
     ((char *)klass->namespaze)[len] = 0;
   } else
@@ -497,8 +526,10 @@ static void CreateClass(MANAGEMENT_STRUCTURES::CustomClass *customClass,
   klass->field_count = customClass->_fields.size();
   if (klass->field_count > 0) {
     // Create a list of fields
-    auto fields = (IL2CPP::FieldInfo *)BNM_MALLOC_TRACKED(
-        klass->field_count * sizeof(IL2CPP::FieldInfo));
+    const auto fieldsSize = klass->field_count * sizeof(IL2CPP::FieldInfo);
+    auto fields = (IL2CPP::FieldInfo *)BNM_MALLOC_TRACKED(fieldsSize);
+    if (!CheckMetadataAllocation(fields, "custom class fields", fieldsSize))
+      return;
 
     // Get the first field
     IL2CPP::FieldInfo *newField = fields;
@@ -518,10 +549,14 @@ static void CreateClass(MANAGEMENT_STRUCTURES::CustomClass *customClass,
   // Add Interfaces
   if (!interfaces.empty()) {
     klass->interfaces_count = interfaces.size();
-    klass->implementedInterfaces = (IL2CPP::Il2CppClass **)BNM_MALLOC_TRACKED(
-        interfaces.size() * sizeof(IL2CPP::Il2CppClass *));
-    memcpy(klass->implementedInterfaces, interfaces.data(),
-           interfaces.size() * sizeof(IL2CPP::Il2CppClass *));
+    const auto interfacesSize =
+        interfaces.size() * sizeof(IL2CPP::Il2CppClass *);
+    klass->implementedInterfaces =
+        (IL2CPP::Il2CppClass **)BNM_MALLOC_TRACKED(interfacesSize);
+    if (!CheckMetadataAllocation(klass->implementedInterfaces,
+                                 "custom class interfaces", interfacesSize))
+      return;
+    memcpy(klass->implementedInterfaces, interfaces.data(), interfacesSize);
   } else {
     klass->interfaces_count = 0;
     klass->implementedInterfaces = nullptr;
@@ -531,10 +566,16 @@ static void CreateClass(MANAGEMENT_STRUCTURES::CustomClass *customClass,
   for (auto method : customClass->_methods)
     PRIVATE_INTERNAL::GetMethodClass(method->myInfo) = klass;
   klass->method_count = methods.size();
-  klass->methods = (const IL2CPP::MethodInfo **)BNM_MALLOC_TRACKED(
-      methods.size() * sizeof(IL2CPP::MethodInfo *));
-  memcpy((void *)klass->methods, methods.data(),
-         methods.size() * sizeof(IL2CPP::MethodInfo *));
+  const auto methodsSize = methods.size() * sizeof(IL2CPP::MethodInfo *);
+  if (methodsSize > 0) {
+    klass->methods =
+        (const IL2CPP::MethodInfo **)BNM_MALLOC_TRACKED(methodsSize);
+    if (!CheckMetadataAllocation(klass->methods, "custom class methods",
+                                 methodsSize))
+      return;
+    memcpy((void *)klass->methods, methods.data(), methodsSize);
+  } else
+    klass->methods = nullptr;
   klass->has_finalize = hasFinalize;
 
   // Copy the parent flags, remove the ABSTRACT and INTERFACE flag if it exists
@@ -555,13 +596,20 @@ static void CreateClass(MANAGEMENT_STRUCTURES::CustomClass *customClass,
 
   // Set interface addresses
   klass->interface_offsets_count = newInterOffsets.size();
-  klass->interfaceOffsets =
-      (IL2CPP::Il2CppRuntimeInterfaceOffsetPair *)BNM_MALLOC_TRACKED(
-          newInterOffsets.size() *
-          sizeof(IL2CPP::Il2CppRuntimeInterfaceOffsetPair));
-  memcpy(klass->interfaceOffsets, newInterOffsets.data(),
-         newInterOffsets.size() *
-             sizeof(IL2CPP::Il2CppRuntimeInterfaceOffsetPair));
+  const auto interfaceOffsetsSize =
+      newInterOffsets.size() * sizeof(IL2CPP::Il2CppRuntimeInterfaceOffsetPair);
+  if (interfaceOffsetsSize > 0) {
+    klass->interfaceOffsets =
+        (IL2CPP::Il2CppRuntimeInterfaceOffsetPair *)BNM_MALLOC_TRACKED(
+            interfaceOffsetsSize);
+    if (!CheckMetadataAllocation(klass->interfaceOffsets,
+                                 "custom class interface offsets",
+                                 interfaceOffsetsSize))
+      return;
+    memcpy(klass->interfaceOffsets, newInterOffsets.data(),
+           interfaceOffsetsSize);
+  } else
+    klass->interfaceOffsets = nullptr;
 
   klass->interopData = nullptr;
   klass->events = nullptr;     // Creation is not supported
@@ -809,8 +857,9 @@ static IL2CPP::Il2CppImage *MakeImage(std::string_view imageName) {
   // Add an assembly to the list
   Internal::il2cppMethods.Assembly$$GetAllAssemblies()->push_back(newAsm);
 
+  auto imageNameStr = std::string(imageName);
   BNM_LOG_INFO(DBG_BNM_MSG_ClassesManagement_MakeImage_Added_Image,
-               imageName.data());
+               imageNameStr.c_str());
 
   return newImg;
 }
@@ -1076,40 +1125,52 @@ static void SetupClassOwner(IL2CPP::Il2CppClass *target,
 
   target->declaringType = owner;
 
-  // Add a class to the new owner's list
+  // Add a class to the new owner's list.
   auto newInnerList = (IL2CPP::Il2CppClass **)BNM_MALLOC_TRACKED(
-      sizeof(IL2CPP::Il2CppClass) * (owner->nested_type_count + 1));
-  memcpy(newInnerList, owner->nestedTypes,
-         sizeof(IL2CPP::Il2CppClass) * owner->nested_type_count);
+      sizeof(IL2CPP::Il2CppClass *) * (owner->nested_type_count + 1));
+  if (oldInnerList && owner->nested_type_count)
+    memcpy(newInnerList, oldInnerList,
+           sizeof(IL2CPP::Il2CppClass *) * owner->nested_type_count);
   newInnerList[owner->nested_type_count++] = target;
   owner->nestedTypes = newInnerList;
 
-  // Mark the class to use less memory
-  if ((owner->flags & BNM_CLASS_ALLOCATED_INNER_FLAG) ==
-      BNM_CLASS_ALLOCATED_INNER_FLAG)
-    BNM_free(oldInnerList);
+  // Mark BNM-owned nested type lists. Previous BNM-owned lists stay tracked and
+  // are released by ClassesManagement::FreeAllAllocations(); freeing them here
+  // would leave stale entries in the global allocation tracker.
   owner->flags |= BNM_CLASS_ALLOCATED_INNER_FLAG;
 
-  // Remove a class from the old owner's list
+  // Remove a class from the old owner's list only when the metadata actually
+  // contains it. Otherwise, keep oldOwner untouched to avoid corrupting its
+  // nested type list.
   if (oldOwner) {
     oldInnerList = oldOwner->nestedTypes;
-    newInnerList = (IL2CPP::Il2CppClass **)BNM_MALLOC_TRACKED(
-        sizeof(IL2CPP::Il2CppClass) * (oldOwner->nested_type_count - 1));
-    uint8_t skipped = 0;
+    bool found = false;
     for (uint16_t i = 0; i < oldOwner->nested_type_count; ++i) {
-      if (skipped == 0)
-        if (skipped = (oldInnerList[i] == target); skipped)
-          continue;
-      newInnerList[i - skipped] = oldInnerList[i];
+      if (oldInnerList && oldInnerList[i] == target) {
+        found = true;
+        break;
+      }
     }
-    oldOwner->nestedTypes = newInnerList;
-    --oldOwner->nested_type_count;
 
-    // Mark the class to use less memory
-    if ((oldOwner->flags & BNM_CLASS_ALLOCATED_INNER_FLAG) ==
-        BNM_CLASS_ALLOCATED_INNER_FLAG)
-      BNM_free(oldInnerList);
-    oldOwner->flags |= BNM_CLASS_ALLOCATED_INNER_FLAG;
+    if (found) {
+      auto newCount = oldOwner->nested_type_count - 1;
+      newInnerList = newCount ? (IL2CPP::Il2CppClass **)BNM_MALLOC_TRACKED(
+                                    sizeof(IL2CPP::Il2CppClass *) * newCount)
+                              : nullptr;
+      uint8_t skipped = 0;
+      for (uint16_t i = 0; i < oldOwner->nested_type_count; ++i) {
+        if (skipped == 0)
+          if (skipped = (oldInnerList[i] == target); skipped)
+            continue;
+        newInnerList[i - skipped] = oldInnerList[i];
+      }
+      oldOwner->nestedTypes = newInnerList;
+      oldOwner->nested_type_count = newCount;
+
+      // Mark BNM-owned nested type lists. Previous BNM-owned lists stay tracked
+      // until ClassesManagement::FreeAllAllocations().
+      oldOwner->flags |= BNM_CLASS_ALLOCATED_INNER_FLAG;
+    }
   }
 }
 
@@ -1120,9 +1181,9 @@ static void SetupClassParent(IL2CPP::Il2CppClass *target,
   if (!parent) [[unlikely]]
     return;
 
-  if ((target->flags & BNM_CLASS_ALLOCATED_HIERARCHY_FLAG) ==
-      BNM_CLASS_ALLOCATED_HIERARCHY_FLAG)
-    BNM_free(target->typeHierarchy);
+  // Previous BNM-owned hierarchy arrays remain in the allocation tracker and
+  // are released during ClassesManagement::FreeAllAllocations(). Do not free
+  // them individually here or the tracker would later free a stale pointer.
   target->flags |= BNM_CLASS_ALLOCATED_HIERARCHY_FLAG;
 
   target->typeHierarchyDepth = parent->typeHierarchyDepth + 1;

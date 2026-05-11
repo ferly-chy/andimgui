@@ -125,7 +125,7 @@ static_assert(false, "BNM: For Unity 2021.1.x, you must define UNITY_PATCH_VER "
 //! Choose your hooking software by uncommenting ONE of the following:
 //! Pilih perangkat lunak hooking Anda dengan menghapus komentar pada SALAH SATU
 //! dari berikut ini:
-// #define BNM_USE_DOBBY
+#define BNM_USE_DOBBY
 // #define BNM_USE_SHADOWHOOK
 
 #if defined(BNM_USE_DOBBY)

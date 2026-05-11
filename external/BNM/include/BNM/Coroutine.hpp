@@ -5,6 +5,7 @@
 #if defined(BNM_CLASSES_MANAGEMENT) && defined(BNM_COROUTINE)
 
 #include <functional>
+#include <exception>
 
 #if __has_include(<coroutine>)
 #include <coroutine>
@@ -109,7 +110,7 @@ struct IEnumerator : BNM::IL2CPP::Il2CppObject {
     }
     inline std::suspend_always initial_suspend() noexcept { return {}; }
     inline std::suspend_always final_suspend() noexcept { return {}; }
-    inline void unhandled_exception() {}
+    inline void unhandled_exception() { _exception = std::current_exception(); }
     inline std::suspend_always await_transform() = delete;
     [[nodiscard]] inline Coroutine::YieldInstruction value() const noexcept {
       return _currentValue;
@@ -120,6 +121,7 @@ struct IEnumerator : BNM::IL2CPP::Il2CppObject {
       return {};
     }
     inline void return_void() {}
+    std::exception_ptr _exception{};
   };
   /// @endcond
 

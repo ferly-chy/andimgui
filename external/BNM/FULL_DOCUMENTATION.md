@@ -367,6 +367,8 @@ auto boxedInt = BNM::Defaults::Get<int>().ToClass().BoxObject(123);
 auto boxedViaDefaults = BNM::Defaults::Box(123);
 ```
 
+`CreateNewObjectParameters(...)` and `CreateNewObjectTypes(...)` return `nullptr` if the constructor cannot be resolved or if instance allocation fails. Always validate the returned object before using it.
+
 ---
 
 ## 6. Methods
@@ -407,6 +409,19 @@ You can also cast from `MethodBase`:
 ```cpp
 auto method = playerClass.GetMethod("SetHealth", 1);
 method.cast<void>()[playerInstance](250.0f);
+```
+
+Typed calls are intentionally strict. If the underlying `MethodInfo` has no `methodPointer`, or if the number of C++ arguments does not match the IL2CPP method parameter count, BNM logs an error and returns the default/empty value for the requested return type instead of calling through an unsafe ABI signature.
+
+This means code that previously relied on a mismatched typed call must be fixed to use the exact signature:
+
+```cpp
+// C# method: void SetHealth(float value)
+auto setHealth = playerClass.GetMethod("SetHealth", 1);
+setHealth[playerInstance].Invoke<void>(999.0f); // correct: one argument
+
+// Wrong: parameter count mismatch, now rejected safely instead of being called.
+setHealth[playerInstance].Invoke<void>();
 ```
 
 ### Generic methods
@@ -475,7 +490,7 @@ if (healthField.IsValid()) {
 }
 ```
 
-`GetFieldPointer()` is useful for direct access but does not support thread-static fields.
+`GetFieldPointer()` is useful for direct access but does not support thread-static fields. For static fields, it can also return `nullptr` when the class static storage is not available yet; validate the pointer before dereferencing it. Prefer `GetValue<T>()` and `SetValue<T>()` for normal static field reads/writes.
 
 ---
 
@@ -1109,6 +1124,19 @@ Resolve by name after BNM is loaded, then cache `Class`, `MethodBase`, `FieldBas
 
 IL2CPP method signatures vary for static/instance methods and older Unity versions. If parameters or return types do not match, hooks and typed calls can crash.
 
+For typed method calls, BNM now fails closed on parameter-count mismatch: the call is not executed and the wrapper returns the default/empty value for the requested return type. Treat that as a bug in the caller's signature and fix the `Invoke<T>(...)` or `BNM::Method<T>` argument list.
+
+### Handle safe failures explicitly
+
+Several runtime paths now return early instead of continuing into undefined behavior:
+
+- `CreateNewObjectParameters(...)` / `CreateNewObjectTypes(...)` return `nullptr` if `.ctor` lookup or allocation fails.
+- `GetFieldPointer()` can return `nullptr` for unavailable static storage; avoid dereferencing without a check.
+- Loading/setup can fail when a resolved IL2CPP hook target is invalid for the current Unity/ABI layout.
+- Coroutine exceptions stop that coroutine deterministically and are logged instead of being silently ignored.
+
+These are not API signature changes, but code should check return values and logs rather than assuming every lookup/allocation/hook target succeeded.
+
 ---
 
 ## 20. Minimal End-to-End Example
@@ -1171,6 +1199,17 @@ Older BNM documentation may be wrong for this codebase. The important updates ar
 - `BNM/Helpers.hpp` adds `BNM_CLASS`, `BNM_METHOD`, `BNM_FIELD`, `BNM_PROPERTY`, `BNM_HOOK`, `BNM_INVOKE_HOOK`, and `BNM_ATTACH_THREAD`.
 - ClassesManagement includes additional method markers: `BNM_CustomMethodMarkAsInvokeHook`, `BNM_CustomMethodMarkAsBasicHook`, `BNM_CustomMethodSkipTypeMatch`, and `BNM_CustomMethodCopyAttributes`.
 - Coroutine support is guarded by both `BNM_CLASSES_MANAGEMENT` and `BNM_COROUTINE`.
+
+### Safety behavior after the core runtime refactor
+
+The public API names and setup flow remain the same, but several previously unsafe edge cases now fail safely:
+
+- `BNM::Method<Ret>` / typed invocation rejects null `methodPointer` and parameter-count mismatches before calling native IL2CPP code.
+- `CreateNewObjectParameters(...)` and `CreateNewObjectTypes(...)` return `nullptr` when constructor lookup or allocation fails instead of returning an unconstructed object.
+- `FieldBase::GetFieldPointer()` returns `nullptr` for unavailable static storage instead of doing null pointer arithmetic.
+- Loading/setup validates resolved hook targets before installing hooks or storing function pointers; unsupported layouts can fail setup earlier with logs.
+- Coroutine `MoveNext()` balances IL2CPP thread attach/detach and stops deterministically when an unhandled coroutine exception occurs.
+- Runtime class metadata allocation failures are logged and stop the current class creation path instead of dereferencing null allocation results.
 
 ---
 

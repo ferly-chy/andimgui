@@ -1,0 +1,155 @@
+cmake_minimum_required(VERSION 3.18)
+
+add_executable(sutf sutf.cpp)
+add_executable(fastbase64 fastbase64.cpp)
+
+if(NOT WIN32)
+  add_custom_command(TARGET fastbase64 POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E remove -f $<TARGET_FILE_DIR:fastbase64>/fastbase64.coreutils$<TARGET_FILE_SUFFIX:fastbase64>
+    COMMAND ${CMAKE_COMMAND} -E create_symlink $<TARGET_FILE:fastbase64> $<TARGET_FILE_DIR:fastbase64>/fastbase64.coreutils$<TARGET_FILE_SUFFIX:fastbase64>
+  )
+else()
+  add_custom_command(TARGET fastbase64 POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E remove -f $<TARGET_FILE_DIR:fastbase64>/fastbase64.coreutils$<TARGET_FILE_SUFFIX:fastbase64>
+    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:fastbase64> $<TARGET_FILE_DIR:fastbase64>/fastbase64.coreutils$<TARGET_FILE_SUFFIX:fastbase64>
+  )
+endif()
+
+if(SIMDUTF_ICONV)
+find_package(Iconv)
+if(Iconv_FOUND)
+  message(STATUS "Iconv was found!")
+  target_compile_definitions(sutf PRIVATE ICONV_AVAILABLE=1)
+  if(Iconv_IS_BUILT_IN)
+    message(STATUS "Iconv is part of the C library.")
+  else(Iconv_IS_BUILT_IN)
+    message(STATUS "Iconv is a separate library, headers at ${Iconv_INCLUDE_DIR}, binary at ${Iconv_LIBRARY}")
+    target_link_libraries(sutf PUBLIC ${Iconv_LIBRARY})
+    target_include_directories(sutf PUBLIC ${Iconv_INCLUDE_DIR})
+  endif(Iconv_IS_BUILT_IN)
+else(Iconv_FOUND)
+  message(STATUS "Iconv was not found!")
+endif(Iconv_FOUND)
+else(SIMDUTF_ICONV)
+  message(STATUS "We are not seeking iconv.")
+endif(SIMDUTF_ICONV)
+if(APPLE)
+  message(STATUS "This is an Apple platform " ${CMAKE_CXX_COMPILER_ID})
+
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    message(STATUS "Apple platform detected, using dead_strip and LTO")
+    target_link_options(sutf PRIVATE "-Wl,-dead_strip")
+    target_link_options(fastbase64 PRIVATE "-Wl,-dead_strip")
+    target_compile_options(sutf PRIVATE "-flto")
+    target_link_options(sutf PRIVATE "-flto")
+    target_compile_options(fastbase64 PRIVATE "-flto")
+    target_link_options(fastbase64 PRIVATE "-flto")
+  endif()
+endif()
+
+if((CMAKE_CXX_COMPILER_ID STREQUAL "GNU") OR (CMAKE_CXX_COMPILER_ID STREQUAL "Clang"))
+  execute_process(COMMAND ${CMAKE_CXX_COMPILER} -print-libgcc-file-name OUTPUT_VARIABLE SIMDUTF_GCC_LIB)
+  get_filename_component(SIMDUTF_GCC_DIR "${SIMDUTF_GCC_LIB}" DIRECTORY)
+  message(STATUS "looking for static C++ library in " ${SIMDUTF_GCC_DIR})
+  find_library(LIBSTDCPP libstdc++.a PATHS "${SIMDUTF_GCC_DIR}")
+  if(LIBSTDCPP)
+    message(STATUS "libstdc++.a found")
+    target_link_options(sutf PRIVATE "-static-libstdc++")
+    target_link_options(fastbase64 PRIVATE "-static-libstdc++")
+  else()
+    message(STATUS "libstdc++.a not found")
+  endif()
+  if(NOT APPLE)
+    target_link_options(sutf PRIVATE "-Wl,--gc-sections")
+    target_link_options(fastbase64 PRIVATE "-Wl,--gc-sections")
+  endif()
+endif()
+
+target_link_libraries(sutf PUBLIC simdutf-nobase64)
+target_compile_definitions(sutf PRIVATE
+  SIMDUTF_FEATURE_BASE64=0
+  SIMDUTF_FEATURE_DETECT_ENCODING=0
+)
+
+target_link_libraries(fastbase64 PUBLIC simdutf-base64)
+target_compile_definitions(fastbase64 PRIVATE
+  SIMDUTF_FEATURE_UTF8=0
+  SIMDUTF_FEATURE_UTF16=0
+  SIMDUTF_FEATURE_UTF32=0
+  SIMDUTF_FEATURE_ASCII=0
+  SIMDUTF_FEATURE_LATIN1=0
+  SIMDUTF_FEATURE_DETECT_ENCODING=0
+)
+
+if(WIN32 AND BUILD_SHARED_LIBS)
+  # Copy the simdutf dll into the directory
+  add_custom_command(TARGET sutf POST_BUILD        # Adds a post-build event
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different  # which executes "cmake -E copy_if_different..."
+        "$<TARGET_FILE:simdutf>"      # <--this is in-file
+        "$<TARGET_FILE_DIR:sutf>")                 # <--this is out-file path
+endif()
+install(
+   TARGETS
+    sutf
+   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+
+install(
+   TARGETS
+    fastbase64
+   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+
+if(WIN32)
+  # On Windows, install a copy of fastbase64 as fastbase64.coreutils
+  install(PROGRAMS $<TARGET_FILE:fastbase64>
+    DESTINATION ${CMAKE_INSTALL_BINDIR}
+    RENAME fastbase64.coreutils
+  )
+else()
+  # On non-Windows, create a symlink fastbase64.coreutils -> fastbase64 at install time
+  install(CODE "
+    if(IS_ABSOLUTE \"${CMAKE_INSTALL_BINDIR}\")
+      set(BINDIR \"${CMAKE_INSTALL_BINDIR}\")
+    else()
+      set(BINDIR \"\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}\")
+    endif()
+    set(BINDIR \"\$ENV{DESTDIR}\${BINDIR}\")
+    file(MAKE_DIRECTORY \"\${BINDIR}\")
+    # Remove any existing file or symlink so create_symlink will not fail with \"file exists\"
+    file(REMOVE \"\${BINDIR}/fastbase64.coreutils\")
+    execute_process(
+      COMMAND \"${CMAKE_COMMAND}\" -E create_symlink
+              \"fastbase64\"
+              \"\${BINDIR}/fastbase64.coreutils\"
+      RESULT_VARIABLE _fastbase64_symlink_result
+      ERROR_VARIABLE _fastbase64_symlink_error
+    )
+    if(NOT _fastbase64_symlink_result EQUAL 0)
+      message(FATAL_ERROR
+        \"Failed to create symlink \${BINDIR}/fastbase64.coreutils -> fastbase64: \${_fastbase64_symlink_error}\")
+    endif()
+  ")
+endif()
+
+install(
+   FILES
+    ${CMAKE_SOURCE_DIR}/man/fastbase64.1
+   DESTINATION ${CMAKE_INSTALL_MANDIR}/man1
+)
+
+install(
+   FILES
+    ${CMAKE_SOURCE_DIR}/man/fastbase64.coreutils.1
+   DESTINATION ${CMAKE_INSTALL_MANDIR}/man1
+)
+
+install(
+   FILES
+    ${CMAKE_SOURCE_DIR}/man/sutf.1
+   DESTINATION ${CMAKE_INSTALL_MANDIR}/man1
+)

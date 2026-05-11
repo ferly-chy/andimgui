@@ -16,13 +16,10 @@
 #include <BNM/Method.hpp>
 #include <BNM/UserSettings/GlobalSettings.hpp>
 #include <BNM/Utils.hpp>
-#include <string_view>
-#include <unordered_map>
-
-#ifdef BNM_ALLOW_MULTI_THREADING_SYNC
 #include <mutex>
 #include <shared_mutex>
-#endif
+#include <string_view>
+#include <unordered_map>
 
 /// @cond
 namespace BNM::Internal {
@@ -49,9 +46,7 @@ extern void *il2cppLibraryHandle;
 extern Loading::MethodFinder currentFinderMethod;
 extern void *currentFinderData;
 
-#ifdef BNM_ALLOW_MULTI_THREADING_SYNC
 extern std::recursive_mutex initMutex;
-#endif
 
 //! \internal
 // A list with variables from the il2cpp VM
@@ -147,12 +142,11 @@ extern ClassCacheMap classCache;
 extern MethodCacheMap methodCache;
 extern GlobalClassCacheMap globalClassCache;
 
-#ifdef BNM_ALLOW_MULTI_THREADING_SYNC
 extern std::shared_mutex imageCacheMutex;
 extern std::shared_mutex classCacheMutex;
 extern std::shared_mutex methodCacheMutex;
 extern std::shared_mutex globalClassCacheMutex;
-#endif
+extern std::mutex onLoadedEventsMutex;
 
 // Sentinel to identify BNM-created images
 extern void *bnmImageSentinel;
@@ -210,16 +204,12 @@ IL2CPP::MethodInfo *IterateMethods(Class target, CompareMethod compare) {
   return nullptr;
 }
 
-#ifdef BNM_ALLOW_MULTI_THREADING_SYNC
 extern std::shared_mutex loadingMutex;
-#endif
 
 #ifdef BNM_CLASSES_MANAGEMENT
 //! \internal
 namespace ClassesManagement {
-#ifdef BNM_ALLOW_MULTI_THREADING_SYNC
 extern std::shared_mutex classesFindAccessMutex;
-#endif
 // Get the list with all the classes that BNM should create/modify using Meyers
 // Singleton
 std::vector<MANAGEMENT_STRUCTURES::CustomClass *> &GetClassesManagementVector();
@@ -268,9 +258,7 @@ extern struct BNMClassesMap {
   }
 
   inline void AddClass(BNM_PTR image, IL2CPP::Il2CppClass *cls) {
-#ifdef BNM_ALLOW_MULTI_THREADING_SYNC
     std::unique_lock lock(classesFindAccessMutex);
-#endif
     (*_map)[image].emplace_back(cls);
   }
 
@@ -282,18 +270,14 @@ extern struct BNMClassesMap {
 
   template <class IterateMethod>
   inline void ForEachByImage(BNM_PTR image, IterateMethod func) {
-#ifdef BNM_ALLOW_MULTI_THREADING_SYNC
     std::shared_lock lock(classesFindAccessMutex);
-#endif
     for (auto item : (*_map)[image])
       if (func(item))
         break;
   }
 
   template <class IterateMethod> inline void ForEach(IterateMethod func) {
-#ifdef BNM_ALLOW_MULTI_THREADING_SYNC
     std::shared_lock lock(classesFindAccessMutex);
-#endif
     for (auto &[img, classes] : (*_map))
       if (func((IL2CPP::Il2CppImage *)img, classes))
         break;

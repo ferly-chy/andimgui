@@ -1,4 +1,6 @@
 #include <BNM/Coroutine.hpp>
+#include <new>
+#include <type_traits>
 
 #if defined(BNM_CLASSES_MANAGEMENT) && defined(BNM_COROUTINE)
 
@@ -195,15 +197,25 @@ bool BNM::Coroutine::IEnumerator::MoveNext() {
   if (!_coroutine)
     return false;
 
-  // Ensure thread is attached to IL2CPP before execution
-  BNM::AttachIl2Cpp();
+  struct Il2CppAttachGuard {
+    bool attached{};
+    ~Il2CppAttachGuard() {
+      if (attached)
+        BNM::DetachIl2Cpp();
+    }
+  } attachGuard{BNM::AttachIl2Cpp()};
 
   // Run coroutine
   _coroutine.resume();
 
   // Check if the coroutine is completed
-  if (_coroutine.done())
+  if (_coroutine.done()) {
+    if (_coroutine.promise()._exception) {
+      BNM_LOG_ERR("BNM coroutine stopped after unhandled exception");
+      Finalize();
+    }
     return false;
+  }
 
   // Get object
   _current = _coroutine.promise().value()._object;
@@ -211,10 +223,15 @@ bool BNM::Coroutine::IEnumerator::MoveNext() {
 }
 
 BNM::Coroutine::IEnumerator *BNM::Coroutine::IEnumerator::Get() {
+  static_assert(std::is_trivially_destructible_v<IEnumerator>,
+                "IEnumerator IL2CPP allocation assumes trivial destruction");
+
   // Creating an IEnumerator for il2cpp
   auto inst = (BNM::Coroutine::IEnumerator *)BNM::Class(
                   IEnumeratorData::customClass.myClass)
                   .CreateNewInstance();
+  if (!inst)
+    return nullptr;
   inst->_current = nullptr;
   inst->_coroutine = nullptr;
   // Swapping the coroutineHandle in places to avoid cleaning
@@ -246,6 +263,9 @@ BNM::Coroutine::WaitForSecondsRealtime::WaitForSecondsRealtime(float seconds) {
 BNM::Coroutine::WaitUntil::WaitUntil(const std::function<bool()> &function) {
   auto obj = (CustomWait *)BNM::Class(CustomWaitData::customClass.myClass)
                  .CreateNewInstance();
+  if (!obj)
+    return;
+  new (obj) CustomWait();
   obj->_func = function;
   obj->_isUntil = true;
   _object = obj;
@@ -254,6 +274,9 @@ BNM::Coroutine::WaitUntil::WaitUntil(const std::function<bool()> &function) {
 BNM::Coroutine::WaitWhile::WaitWhile(const std::function<bool()> &function) {
   auto obj = (CustomWait *)BNM::Class(CustomWaitData::customClass.myClass)
                  .CreateNewInstance();
+  if (!obj)
+    return;
+  new (obj) CustomWait();
   obj->_func = function;
   obj->_isUntil = false;
   _object = obj;

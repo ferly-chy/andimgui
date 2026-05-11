@@ -144,33 +144,81 @@ void main_thread() {
    */
   SwapChainHook::SetRenderCallback([]() {
     ImGui::Begin("Unity Mod Menu");
+
     ImGuiFX::TextRainbow("IL2CPP Space");
     ImGui::Separator();
 
-    if (ImGui::CollapsingHeader("Game Tweaks", ImGuiTreeNodeFlags_DefaultOpen)) {
-      ImGui::Checkbox("Enable Speedhack", &speedhackEnabled);
-      if (speedhackEnabled) {
-        ImGui::SliderFloat("Speed Multiplier", &speedMultiplier, 0.1f, 10.0f);
+    static int currentTab = 0;
+
+    if (ImGui::Button("Game Menu", ImVec2(120, 40))) {
+      currentTab = 0;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Diagnostics", ImVec2(120, 40))) {
+      currentTab = 1;
+    }
+
+    ImGui::Separator();
+
+    if (currentTab == 0) {
+      if (ImGui::CollapsingHeader("Game Tweaks",
+                                  ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Checkbox("Enable Speedhack", &speedhackEnabled);
+
+        if (speedhackEnabled) {
+          ImGui::SliderFloat("Speed Multiplier", &speedMultiplier, 0.1f, 10.0f);
+        }
+      }
+
+      static std::string text;
+      ImGui::InputText("Message", &text);
+    }
+
+    if (currentTab == 1) {
+      DiagnosticsPanel::Render();
+
+      ImGui::Separator();
+
+      static bool demo = false;
+      ImGui::Checkbox("Show ImGui Demo", &demo);
+
+      if (demo) {
+        ImGui::ShowDemoWindow(&demo);
       }
     }
 
-
-    std::string text;
-    ImGui::InputText("Message", &text);
-
-    ImGui::Separator();
-
-    DiagnosticsPanel::Render();
-
-    ImGui::Separator();
-
-    static bool demo = false;
-    ImGui::Checkbox("Show ImGui Demo", &demo);
-    if (demo) {
-      ImGui::ShowDemoWindow(&demo);
-    }
-
     ImGui::End();
+
+    /*
+        ImGui::Begin("Unity Mod Menu");
+        ImGuiFX::TextRainbow("IL2CPP Space");
+        ImGui::Separator();
+
+        if (ImGui::CollapsingHeader("Game Tweaks",
+       ImGuiTreeNodeFlags_DefaultOpen)) { ImGui::Checkbox("Enable Speedhack",
+       &speedhackEnabled); if (speedhackEnabled) { ImGui::SliderFloat("Speed
+       Multiplier", &speedMultiplier, 0.1f, 10.0f);
+          }
+        }
+
+
+        std::string text;
+        ImGui::InputText("Message", &text);
+
+        ImGui::Separator();
+
+        DiagnosticsPanel::Render();
+
+        ImGui::Separator();
+
+        static bool demo = false;
+        ImGui::Checkbox("Show ImGui Demo", &demo);
+        if (demo) {
+          ImGui::ShowDemoWindow(&demo);
+        }
+
+        ImGui::End();
+    */
   });
 
   /**
