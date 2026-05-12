@@ -6,6 +6,10 @@
 #include "private/Logging.hpp"
 #include <Internals.hpp>
 
+#include <cstddef>
+#include <cstdio>
+#include <cstring>
+
 using namespace BNM;
 
 void Internal::Load() {
@@ -342,15 +346,220 @@ void Internal::LateInit(void *il2cpp_class_from_il2cpp_type_addr) {
 
 static void EmptyMethod() {}
 
-#ifdef BNM_DEBUG
+static void *OffsetInLib(void *offsetInMemory);
+
+namespace {
+
+struct ResolverCandidate {
+  const char *name;
+  BNM_PTR raw;
+  uint8_t sourceGroup;
+  uint8_t priority;
+  bool valid;
+  const char *invalidReason;
+};
+
+struct ResolverResult {
+  BNM_PTR selected;
+  uint8_t voteCount;
+  const char *candidateNames;
+  const char *reason;
+  bool confirmedLegacy;
+  bool nonLegacy;
+};
+
+static bool IsExecutableAddress(BNM_PTR address) {
+  if (!address)
+    return false;
+#if defined(__linux__) || defined(__ANDROID__)
+  FILE *maps = fopen("/proc/self/maps", "r");
+  if (!maps)
+    return IsAllocated((void *)address);
+
+  char line[512];
+  while (fgets(line, sizeof(line), maps)) {
+    unsigned long long start = 0;
+    unsigned long long end = 0;
+    char perms[5] = {};
+    if (sscanf(line, "%llx-%llx %4s", &start, &end, perms) != 3)
+      continue;
+    if (address >= (BNM_PTR)start && address < (BNM_PTR)end) {
+      fclose(maps);
+      return perms[0] == 'r' && perms[2] == 'x';
+    }
+  }
+  fclose(maps);
+  return false;
+#else
+  return IsAllocated((void *)address);
+#endif
+}
+
+static bool IsInsideLibIl2CppText(BNM_PTR address) {
+  if (!address)
+    return false;
+  Dl_info info{};
+  if (!BNM_dladdr((void *)address, &info) || !info.dli_fname)
+    return false;
+  return strstr(info.dli_fname, BNM_OBFUSCATE_TMP("libil2cpp")) != nullptr;
+}
+
+static bool LooksLikeFunctionStart(BNM_PTR address) {
+  return address && IsAllocated((void *)address) && IsExecutableAddress(address);
+}
+
+static const char *ValidateResolvedAddress(BNM_PTR address) {
+  if (!address)
+    return "null";
+  if (!IsAllocated((void *)address))
+    return "not allocated";
+  if (!IsExecutableAddress(address))
+    return "not executable/mapped";
+  if (!IsInsideLibIl2CppText(address))
+    return "outside libil2cpp mapping";
+  if (!LooksLikeFunctionStart(address))
+    return "does not look like function start";
+  return nullptr;
+}
+
+static const char *AppendCandidateNames(const ResolverCandidate *candidates,
+                                        size_t count, BNM_PTR address,
+                                        char *buffer, size_t bufferSize) {
+  if (!buffer || !bufferSize)
+    return "";
+
+  buffer[0] = '\0';
+  size_t used = 0;
+  for (size_t i = 0; i < count; ++i) {
+    if (candidates[i].raw != address)
+      continue;
+
+    int written = snprintf(buffer + used, bufferSize - used, "%s%s",
+                           used ? "," : "", candidates[i].name);
+    if (written < 0)
+      break;
+    if ((size_t)written >= bufferSize - used) {
+      buffer[bufferSize - 1] = '\0';
+      break;
+    }
+    used += (size_t)written;
+  }
+
+  return buffer;
+}
+
+static ResolverResult ResolveByConsensus(const ResolverCandidate *candidates,
+                                         size_t count, BNM_PTR legacyAddress,
+                                         char *candidateNames,
+                                         size_t candidateNamesSize) {
+  ResolverResult result{};
+  result.reason = "no independent majority";
+
+  uint8_t bestPriority = 0xff;
+  for (size_t i = 0; i < count; ++i) {
+    if (!candidates[i].valid)
+      continue;
+
+    uint8_t votes = 0;
+    uint8_t sourceGroups[8] = {};
+    uint8_t sourceGroupCount = 0;
+    uint8_t priority = candidates[i].priority;
+
+    for (size_t j = 0; j < count; ++j) {
+      if (!candidates[j].valid || candidates[j].raw != candidates[i].raw)
+        continue;
+
+      ++votes;
+      if (candidates[j].priority < priority)
+        priority = candidates[j].priority;
+
+      bool seenSourceGroup = false;
+      for (uint8_t group = 0; group < sourceGroupCount; ++group) {
+        if (sourceGroups[group] == candidates[j].sourceGroup) {
+          seenSourceGroup = true;
+          break;
+        }
+      }
+      if (!seenSourceGroup && sourceGroupCount < sizeof(sourceGroups))
+        sourceGroups[sourceGroupCount++] = candidates[j].sourceGroup;
+    }
+
+    if (sourceGroupCount < 2)
+      continue;
+
+    if (votes > result.voteCount ||
+        (votes == result.voteCount && priority < bestPriority)) {
+      result.selected = candidates[i].raw;
+      result.voteCount = votes;
+      bestPriority = priority;
+    }
+  }
+
+  if (!result.selected)
+    return result;
+
+  result.candidateNames = AppendCandidateNames(candidates, count, result.selected,
+                                              candidateNames, candidateNamesSize);
+  result.confirmedLegacy = result.selected == legacyAddress;
+  result.nonLegacy = result.selected != legacyAddress;
+  result.reason = result.confirmedLegacy
+                      ? "legacy path confirmed by independent source"
+                      : "non-legacy independent majority";
+  return result;
+}
+
+static void LogResolverCandidate(const char *resolverName,
+                                 const ResolverCandidate &candidate) {
+#if defined(BNM_ENABLE_RESOLVER_DIAGNOSTICS)
+  BNM_LOG_DEBUG("BNM: Resolver %s candidate %s raw=%p offset=%p valid=%s "
+                "reason=%s",
+                resolverName, candidate.name, (void *)candidate.raw,
+                OffsetInLib((void *)candidate.raw), candidate.valid ? "yes" : "no",
+                candidate.valid ? "ok" : candidate.invalidReason);
+#else
+  if (!candidate.valid && candidate.raw) {
+    BNM_LOG_WARN("BNM: Resolver %s candidate %s rejected: %s (%p, offset %p).",
+                 resolverName, candidate.name, candidate.invalidReason,
+                 (void *)candidate.raw, OffsetInLib((void *)candidate.raw));
+  }
+#endif
+}
+
+static void LogResolverSummary(const char *resolverName, const ResolverResult &result,
+                               BNM_PTR fallback, const char *mode) {
+#if defined(BNM_ENABLE_RESOLVER_DIAGNOSTICS)
+  BNM_LOG_DEBUG("BNM: Resolver %s selected=%p offset=%p votes=%d names=[%s] "
+                "reason=%s mode=%s fallback=%p",
+                resolverName, (void *)result.selected,
+                OffsetInLib((void *)result.selected), result.voteCount,
+                result.candidateNames ? result.candidateNames : "", result.reason,
+                mode, (void *)fallback);
+#else
+  (void)resolverName;
+  (void)result;
+  (void)fallback;
+  (void)mode;
+#endif
+}
+
+static bool IsValidResolvedAddress(BNM_PTR address) {
+  // Keep hard-fail resolver behavior backward-compatible for non-candidate paths.
+  // Executable/libil2cpp checks are diagnostic hardening at this stage.
+  return address && IsAllocated((void *)address);
+}
+
+} // namespace
+
 static void *OffsetInLib(void *offsetInMemory) {
   if (offsetInMemory == nullptr)
     return nullptr;
-  Dl_info info;
-  BNM_dladdr(offsetInMemory, &info);
+  Dl_info info{};
+  if (!BNM_dladdr(offsetInMemory, &info) || !info.dli_fbase)
+    return nullptr;
   return (void *)((BNM_PTR)offsetInMemory - (BNM_PTR)info.dli_fbase);
 }
 
+#ifdef BNM_DEBUG
 void *Utils::OffsetInLib(void *offsetInMemory) {
   return ::OffsetInLib(offsetInMemory);
 }
@@ -376,10 +585,6 @@ bool Internal::SetupBNM() {
     return current;
   };
 
-  auto IsValidResolvedAddress = [](BNM_PTR address) -> bool {
-    return address && IsAllocated((void *)address);
-  };
-
   //! il2cpp::vm::Class::Init
   auto array_new_specific = (BNM_PTR)GetIl2CppMethod(
       BNM_OBFUSCATE_TMP(BNM_IL2CPP_API_il2cpp_array_new_specific));
@@ -387,6 +592,10 @@ bool Internal::SetupBNM() {
       BNM_OBFUSCATE_TMP(BNM_IL2CPP_API_il2cpp_array_new));
   auto value_box = (BNM_PTR)GetIl2CppMethod(
       BNM_OBFUSCATE_TMP(BNM_IL2CPP_API_il2cpp_value_box));
+  auto object_new = (BNM_PTR)GetIl2CppMethod(
+      BNM_OBFUSCATE_TMP(BNM_IL2CPP_API_il2cpp_object_new));
+  auto array_class_get = (BNM_PTR)GetIl2CppMethod(
+      BNM_OBFUSCATE_TMP(BNM_IL2CPP_API_il2cpp_array_class_get));
 
   if (!array_new_specific || !array_new || !value_box) {
     BNM_LOG_ERR("BNM: Critical API missing. Cannot proceed.");
@@ -400,25 +609,127 @@ bool Internal::SetupBNM() {
   BNM_PTR p2 = ResolveNestedJump(array_new, 2, count);
   BNM_PTR p3 = ResolveNestedJump(value_box, 1, count);
 
+  // Extended candidates are diagnostic-only by default. They are logged so a
+  // target can be tested without changing the historical P1 fallback behavior.
+  BNM_PTR p4d1 = object_new ? ResolveNestedJump(object_new, 1, count) : 0;
+  BNM_PTR p4d2 = p4d1 ? AssemblerUtils::FindNextJump(p4d1, count) : 0;
+  BNM_PTR p4d3 = p4d2 ? AssemblerUtils::FindNextJump(p4d2, count) : 0;
+  BNM_PTR p5d1 = array_class_get ? ResolveNestedJump(array_class_get, 1, count) : 0;
+  BNM_PTR p5d2 = p5d1 ? AssemblerUtils::FindNextJump(p5d1, count) : 0;
+  BNM_PTR p5d3 = p5d2 ? AssemblerUtils::FindNextJump(p5d2, count) : 0;
+
+  ResolverCandidate extendedCandidates[] = {
+      {"P1", p1, 1, 1, false, nullptr},
+      {"P2", p2, 2, 2, false, nullptr},
+      {"P3", p3, 3, 3, false, nullptr},
+      {"P4D1", p4d1, 4, 4, false, nullptr},
+      {"P4D2", p4d2, 4, 5, false, nullptr},
+      {"P4D3", p4d3, 4, 6, false, nullptr},
+      {"P5D1", p5d1, 5, 7, false, nullptr},
+      {"P5D2", p5d2, 5, 8, false, nullptr},
+      {"P5D3", p5d3, 5, 9, false, nullptr}};
+
+  for (auto &candidate : extendedCandidates) {
+    candidate.invalidReason = ValidateResolvedAddress(candidate.raw);
+    candidate.valid = candidate.invalidReason == nullptr;
+    if (candidate.valid)
+      candidate.invalidReason = "ok";
+    LogResolverCandidate("Class::Init", candidate);
+  }
+
+  char extendedNames[128];
+  ResolverResult classInitConsensus = ResolveByConsensus(
+      extendedCandidates, sizeof(extendedCandidates) / sizeof(extendedCandidates[0]),
+      p1, extendedNames, sizeof(extendedNames));
+  BNM_PTR extendedMajority = classInitConsensus.selected;
+  uint8_t extendedVotes = classInitConsensus.voteCount;
+  const char *extendedMajorityNames = classInitConsensus.candidateNames
+                                          ? classInitConsensus.candidateNames
+                                          : "";
+  if (classInitConsensus.confirmedLegacy) {
+    BNM_LOG_DEBUG("BNM: Extended Class::Init consensus confirmed Path 1 %p "
+                  "with %d votes from [%s].",
+                  (void *)extendedMajority, extendedVotes,
+                  extendedMajorityNames);
+  } else if (extendedMajority) {
+    BNM_LOG_WARN("BNM: Extended Class::Init consensus found non-Path 1 target "
+                 "%p with %d votes from [%s] while Path 1 is %p.",
+                 (void *)extendedMajority, extendedVotes, extendedMajorityNames,
+                 (void *)p1);
+  } else {
+    BNM_LOG_WARN("BNM: Extended Class::Init consensus found no majority. "
+                 "Path 1 remains the compatibility fallback.");
+  }
+
+  LogResolverSummary("Class::Init", classInitConsensus, p1,
+                     "safe extended consensus");
+
+#if defined(BNM_ENABLE_EXTENDED_CLASS_INIT_CONSENSUS)
+  BNM_PTR selectedClassInit = p1;
+  if (extendedMajority == p1) {
+    BNM_LOG_DEBUG("BNM: Extended Class::Init safe mode using confirmed Path 1 "
+                  "%p.",
+                  (void *)selectedClassInit);
+  } else if (!extendedMajority) {
+    BNM_LOG_WARN("BNM: Extended Class::Init consensus failed. Using Path 1 "
+                 "fallback %p.",
+                 (void *)selectedClassInit);
+  } else {
+#if defined(BNM_ALLOW_NON_P1_CLASS_INIT_CONSENSUS)
+    selectedClassInit = extendedMajority;
+    BNM_LOG_WARN("BNM: Extended Class::Init consensus using non-Path 1 target "
+                 "%p from [%s] because "
+                 "BNM_ALLOW_NON_P1_CLASS_INIT_CONSENSUS is enabled.",
+                 (void *)selectedClassInit, extendedMajorityNames);
+#else
+    BNM_LOG_WARN("BNM: Extended Class::Init consensus selected non-Path 1 "
+                 "target %p from [%s], but safe mode keeps Path 1 %p. Define "
+                 "BNM_ALLOW_NON_P1_CLASS_INIT_CONSENSUS to test this target.",
+                 (void *)extendedMajority, extendedMajorityNames,
+                 (void *)selectedClassInit);
+#endif
+  }
+  il2cppMethods.Class$$Init = (decltype(il2cppMethods.Class$$Init))selectedClassInit;
+#else
   if (p1 && (p1 == p2 || p1 == p3))
     il2cppMethods.Class$$Init = (decltype(il2cppMethods.Class$$Init))p1;
   else if (p2 && p2 == p3)
     il2cppMethods.Class$$Init = (decltype(il2cppMethods.Class$$Init))p2;
   else {
-    // Fallback to the most historical stable path if consensus fails
-    BNM_LOG_WARN("BNM: Class::Init consensus failed (P1:%p, P2:%p, P3:%p). "
-                 "Using Path 1 fallback.",
-                 (void *)p1, (void *)p2, (void *)p3);
+    // Fallback to the most historical stable path if consensus fails. If the
+    // extended diagnostics independently matched P1, report that confirmation
+    // instead of making the fallback look unvalidated.
+    if (extendedMajority == p1) {
+      BNM_LOG_DEBUG("BNM: Class::Init legacy consensus failed (P1:%p, P2:%p, "
+                    "P3:%p), but extended diagnostics confirmed Path 1 via "
+                    "[%s]. Using Path 1.",
+                    (void *)p1, (void *)p2, (void *)p3,
+                    extendedMajorityNames);
+    } else {
+      BNM_LOG_WARN("BNM: Class::Init consensus failed (P1:%p, P2:%p, P3:%p). "
+                   "Using Path 1 fallback.",
+                   (void *)p1, (void *)p2, (void *)p3);
+    }
     il2cppMethods.Class$$Init = (decltype(il2cppMethods.Class$$Init))p1;
   }
+#endif
 
   // Sanity check: Ensure Class::Init is actually resolved and looks like a
   // valid pointer
-  if (!il2cppMethods.Class$$Init ||
-      !IsAllocated((void *)il2cppMethods.Class$$Init)) {
-    BNM_LOG_ERR("BNM: Failed to resolve Class::Init or address is invalid. "
-                "Modding will fail.");
+  if (!IsValidResolvedAddress((BNM_PTR)il2cppMethods.Class$$Init)) {
+    BNM_LOG_ERR("BNM: Failed to resolve Class::Init or address is invalid: %s. "
+                "Modding will fail.",
+                ValidateResolvedAddress((BNM_PTR)il2cppMethods.Class$$Init));
     return false;
+  }
+
+  const char *classInitDiagnosticReason =
+      ValidateResolvedAddress((BNM_PTR)il2cppMethods.Class$$Init);
+  if (classInitDiagnosticReason) {
+    BNM_LOG_WARN("BNM: Class::Init selected address passed legacy validation "
+                 "but failed executable/text diagnostics: %s (%p, offset %p).",
+                 classInitDiagnosticReason, (void *)il2cppMethods.Class$$Init,
+                 OffsetInLib((void *)il2cppMethods.Class$$Init));
   }
 
   BNM_LOG_DEBUG(DBG_BNM_MSG_SetupBNM_Class_Init,

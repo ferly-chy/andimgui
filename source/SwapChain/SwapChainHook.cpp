@@ -29,6 +29,9 @@
 #include "imgui/backends/imgui_impl_opengl3.h"
 #include "imgui/backends/imgui_impl_vulkan.h"
 #include "imgui/imgui.h"
+#include "UI/UIState.h"
+#include "Utils/icon.h"
+#include "Utils/stb_image.h"
 
 // ===========================================================================
 // 调试日志开关：设为 0 关闭 SwapChainHook 的详细调试日志（LOGE 始终保留）
@@ -358,6 +361,25 @@ static bool InitImGuiOnGameContext(EGLDisplay display, EGLSurface surface) {
     return false;
   }
 
+  // --- Icon Loading (GLES) ---
+  {
+    int w_icon, h_icon, ch_icon;
+    unsigned char *data = stbi_load_from_memory(icon_jpg, icon_jpg_len, &w_icon, &h_icon, &ch_icon, 4);
+    if (data) {
+      GLuint tid;
+      glGenTextures(1, &tid);
+      glBindTexture(GL_TEXTURE_2D, tid);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w_icon, h_icon, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+      stbi_image_free(data);
+      UIState::g_IconTextureID = (ImTextureID)(intptr_t)tid;
+      SCH_LOGI("[SwapChainHook/GL] Icon texture loaded tid=%u", tid);
+    } else {
+      LOGE("[SwapChainHook/GL] Failed to load icon texture data");
+    }
+  }
+
   g_GlesInitialized = true;
   g_ImGuiReady.store(true);
   g_ImGuiWindow = initWindow;
@@ -518,6 +540,12 @@ static VkCommandPool g_VkCommandPool = VK_NULL_HANDLE;
 static VkDescriptorPool g_VkDescriptorPool = VK_NULL_HANDLE;
 static VkSwapchainKHR g_VkSwapchain = VK_NULL_HANDLE;
 
+// Icon resources
+static VkImage g_VkIconImage = VK_NULL_HANDLE;
+static VkDeviceMemory g_VkIconMemory = VK_NULL_HANDLE;
+static VkImageView g_VkIconImageView = VK_NULL_HANDLE;
+static VkSampler g_VkIconSampler = VK_NULL_HANDLE;
+
 static std::vector<VkImage> g_VkSwapImages;
 static std::vector<VkImageView> g_VkSwapImageViews;
 static std::vector<VkFramebuffer> g_VkFramebuffers;
@@ -627,6 +655,24 @@ static void CleanupVkResources() {
 
   if (wasVkInitialized)
     ImGui_ImplVulkan_Shutdown();
+
+  if (g_VkIconSampler) {
+    vkDestroySampler(g_VkDevice, g_VkIconSampler, nullptr);
+    g_VkIconSampler = VK_NULL_HANDLE;
+  }
+  if (g_VkIconImageView) {
+    vkDestroyImageView(g_VkDevice, g_VkIconImageView, nullptr);
+    g_VkIconImageView = VK_NULL_HANDLE;
+  }
+  if (g_VkIconImage) {
+    vkDestroyImage(g_VkDevice, g_VkIconImage, nullptr);
+    g_VkIconImage = VK_NULL_HANDLE;
+  }
+  if (g_VkIconMemory) {
+    vkFreeMemory(g_VkDevice, g_VkIconMemory, nullptr);
+    g_VkIconMemory = VK_NULL_HANDLE;
+  }
+  UIState::g_IconTextureID = 0;
 
   for (auto semaphore : g_VkRenderCompleteSemaphores)
     if (semaphore)
@@ -831,6 +877,168 @@ static bool CreateVkImGuiResources() {
   return true;
 }
 
+static uint32_t FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) {
+  VkPhysicalDeviceMemoryProperties memProperties;
+  vkGetPhysicalDeviceMemoryProperties(g_VkPhysDev, &memProperties);
+  for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
+    if ((typeFilter & (1 << i)) &&
+        (memProperties.memoryTypes[i].propertyFlags & properties) == properties)
+      return i;
+  }
+  return 0xFFFFFFFF;
+}
+
+static void ExecuteSingleCommand(const std::function<void(VkCommandBuffer)> &func) {
+  VkCommandBufferAllocateInfo alloc_info = {};
+  alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+  alloc_info.commandPool = g_VkCommandPool;
+  alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+  alloc_info.commandBufferCount = 1;
+
+  VkCommandBuffer command_buffer;
+  vkAllocateCommandBuffers(g_VkDevice, &alloc_info, &command_buffer);
+
+  VkCommandBufferBeginInfo begin_info = {};
+  begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+  begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+  vkBeginCommandBuffer(command_buffer, &begin_info);
+
+  func(command_buffer);
+
+  vkEndCommandBuffer(command_buffer);
+
+  VkSubmitInfo submit_info = {};
+  submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+  submit_info.commandBufferCount = 1;
+  submit_info.pCommandBuffers = &command_buffer;
+
+  vkQueueSubmit(g_VkQueue, 1, &submit_info, VK_NULL_HANDLE);
+  vkQueueWaitIdle(g_VkQueue);
+
+  vkFreeCommandBuffers(g_VkDevice, g_VkCommandPool, 1, &command_buffer);
+}
+
+static void LoadIconTextureVulkan() {
+  int width, height, channels;
+  unsigned char *data = stbi_load_from_memory(icon_jpg, icon_jpg_len, &width, &height, &channels, 4);
+  if (!data) {
+    LOGE("[SwapChainHook/Vk] stbi_load_from_memory failed for icon");
+    return;
+  }
+
+  VkDeviceSize image_size = width * height * 4;
+  VkBuffer staging_buffer;
+  VkDeviceMemory staging_memory;
+
+  VkBufferCreateInfo buffer_info = {};
+  buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+  buffer_info.size = image_size;
+  buffer_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+  buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  vkCreateBuffer(g_VkDevice, &buffer_info, nullptr, &staging_buffer);
+
+  VkMemoryRequirements mem_reqs;
+  vkGetBufferMemoryRequirements(g_VkDevice, staging_buffer, &mem_reqs);
+
+  VkMemoryAllocateInfo alloc_info = {};
+  alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+  alloc_info.allocationSize = mem_reqs.size;
+  alloc_info.memoryTypeIndex = FindMemoryType(
+      mem_reqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                   VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+  vkAllocateMemory(g_VkDevice, &alloc_info, nullptr, &staging_memory);
+  vkBindBufferMemory(g_VkDevice, staging_buffer, staging_memory, 0);
+
+  void *mapped_data;
+  vkMapMemory(g_VkDevice, staging_memory, 0, image_size, 0, &mapped_data);
+  memcpy(mapped_data, data, (size_t)image_size);
+  vkUnmapMemory(g_VkDevice, staging_memory);
+  stbi_image_free(data);
+
+  VkImageCreateInfo image_info = {};
+  image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  image_info.imageType = VK_IMAGE_TYPE_2D;
+  image_info.format = VK_FORMAT_R8G8B8A8_UNORM;
+  image_info.extent = {(uint32_t)width, (uint32_t)height, 1};
+  image_info.mipLevels = 1;
+  image_info.arrayLayers = 1;
+  image_info.samples = VK_SAMPLE_COUNT_1_BIT;
+  image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+  image_info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+  image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  vkCreateImage(g_VkDevice, &image_info, nullptr, &g_VkIconImage);
+
+  vkGetImageMemoryRequirements(g_VkDevice, g_VkIconImage, &mem_reqs);
+  alloc_info.allocationSize = mem_reqs.size;
+  alloc_info.memoryTypeIndex = FindMemoryType(
+      mem_reqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+  vkAllocateMemory(g_VkDevice, &alloc_info, nullptr, &g_VkIconMemory);
+  vkBindImageMemory(g_VkDevice, g_VkIconImage, g_VkIconMemory, 0);
+
+  ExecuteSingleCommand([&](VkCommandBuffer cmd) {
+    VkImageMemoryBarrier barrier = {};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = g_VkIconImage;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+                         nullptr, 1, &barrier);
+
+    VkBufferImageCopy region = {};
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.layerCount = 1;
+    region.imageExtent = {(uint32_t)width, (uint32_t)height, 1};
+    vkCmdCopyBufferToImage(cmd, staging_buffer, g_VkIconImage,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr,
+                         0, nullptr, 1, &barrier);
+  });
+
+  vkDestroyBuffer(g_VkDevice, staging_buffer, nullptr);
+  vkFreeMemory(g_VkDevice, staging_memory, nullptr);
+
+  VkImageViewCreateInfo view_info = {};
+  view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  view_info.image = g_VkIconImage;
+  view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+  view_info.format = VK_FORMAT_R8G8B8A8_UNORM;
+  view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  view_info.subresourceRange.baseMipLevel = 0;
+  view_info.subresourceRange.levelCount = 1;
+  view_info.subresourceRange.baseArrayLayer = 0;
+  view_info.subresourceRange.layerCount = 1;
+  vkCreateImageView(g_VkDevice, &view_info, nullptr, &g_VkIconImageView);
+
+  VkSamplerCreateInfo sampler_info = {};
+  sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+  sampler_info.magFilter = VK_FILTER_LINEAR;
+  sampler_info.minFilter = VK_FILTER_LINEAR;
+  sampler_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  sampler_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  vkCreateSampler(g_VkDevice, &sampler_info, nullptr, &g_VkIconSampler);
+
+  UIState::g_IconTextureID = (ImTextureID)ImGui_ImplVulkan_AddTexture(
+      g_VkIconSampler, g_VkIconImageView,
+      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  SCH_LOGI("[SwapChainHook/Vk] Icon texture loaded for Vulkan");
+}
+
 /**
  * @brief 初始化 ImGui Vulkan 后端
  */
@@ -987,6 +1195,9 @@ static bool InitImGuiVulkan() {
     ImGui::DestroyContext();
     return false;
   }
+
+  // --- Icon Loading (Vulkan) ---
+  LoadIconTextureVulkan();
 
   // 对外报告横屏尺寸
   g_Width = (int)displayW;

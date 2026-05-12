@@ -10,6 +10,9 @@ project(BNM
 option(BNM_LINK_LOG "Link against Android log library" ON)
 option(BNM_ENABLE_LTO "Enable Link Time Optimization" ON)
 option(BNM_HARDENING "Enable security hardening flags" ON)
+option(BNM_ENABLE_EXTENDED_CLASS_INIT_CONSENSUS "Enable extended Class::Init consensus diagnostics and safe Path 1 confirmation" ON)
+option(BNM_ALLOW_NON_P1_CLASS_INIT_CONSENSUS "Allow extended Class::Init consensus to select a non-Path 1 target" OFF)
+option(BNM_ENABLE_RESOLVER_DIAGNOSTICS "Enable structured resolver diagnostic logs" OFF)
 
 #C++ Standard Configuration
 set(CMAKE_CXX_STANDARD 23)
@@ -70,6 +73,18 @@ if(BNM_HARDENING)
             -D_FORTIFY_SOURCE=2
         >
     )
+endif()
+
+if(BNM_ENABLE_EXTENDED_CLASS_INIT_CONSENSUS)
+    target_compile_definitions(BNM PRIVATE BNM_ENABLE_EXTENDED_CLASS_INIT_CONSENSUS)
+endif()
+
+if(BNM_ALLOW_NON_P1_CLASS_INIT_CONSENSUS)
+    target_compile_definitions(BNM PRIVATE BNM_ALLOW_NON_P1_CLASS_INIT_CONSENSUS)
+endif()
+
+if(BNM_ENABLE_RESOLVER_DIAGNOSTICS)
+    target_compile_definitions(BNM PRIVATE BNM_ENABLE_RESOLVER_DIAGNOSTICS)
 endif()
 
 # Link Time Optimization (LTO)

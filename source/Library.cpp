@@ -3,6 +3,7 @@
 #include "InputEvent/CustomHandleInput.h"
 #include "InputEvent/InputEventHook.h"
 #include "SwapChain/SwapChainHook.h"
+#include "UI/UIState.h"
 #include "UI/DiagnosticsPanel.h"
 #include "Utils/CrashHandler.h"
 #include "Utils/FileLogger.h"
@@ -143,7 +144,43 @@ void main_thread() {
    * Render ImGui
    */
   SwapChainHook::SetRenderCallback([]() {
-    ImGui::Begin("Unity Mod Menu");
+    // --- Floating Icon ---
+    ImGui::SetNextWindowPos(UIState::g_IconPosition, ImGuiCond_FirstUseEver);
+    if (ImGui::Begin("##Icon", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing)) {
+      UIState::g_IconPosition = ImGui::GetWindowPos();
+      if (UIState::g_IconTextureID) {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0, 0, 0, 0));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0, 0, 0, 0));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
+
+        if (ImGui::ImageButton("##IconBtn", (ImTextureID)UIState::g_IconTextureID, ImVec2(98, 98))) {
+          if (ImGui::GetIO().MouseDragMaxDistanceSqr[0] < 50.0f) {
+            UIState::g_IsMenuVisible = !UIState::g_IsMenuVisible;
+          }
+        }
+
+        if (ImGui::IsItemActive() && ImGui::IsMouseDragging(0)) {
+          UIState::g_IconPosition.x += ImGui::GetIO().MouseDelta.x;
+          UIState::g_IconPosition.y += ImGui::GetIO().MouseDelta.y;
+          ImGui::SetWindowPos(UIState::g_IconPosition);
+        }
+        ImGui::PopStyleVar(2);
+        ImGui::PopStyleColor(3);
+      } else {
+        // Fallback if texture not loaded
+        if (ImGui::Button("MOD", ImVec2(80, 80))) {
+          UIState::g_IsMenuVisible = !UIState::g_IsMenuVisible;
+        }
+      }
+    }
+    ImGui::End();
+
+    if (!UIState::g_IsMenuVisible)
+      return;
+
+    ImGui::Begin("Unity Mod Menu", nullptr, ImGuiWindowFlags_NoCollapse);
 
     ImGuiFX::TextRainbow("IL2CPP Space");
     ImGui::Separator();
