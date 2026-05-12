@@ -1,6 +1,7 @@
 #pragma once
 
 #include <map>
+#include <mutex>
 #include <vector>
 
 #include "BasicMonoStructures.hpp"
@@ -25,6 +26,7 @@ struct Dictionary : BNM::IL2CPP::Il2CppObject {
   static inline Method<bool> _ContainsKey_method{};
   static inline Method<bool> _ContainsValue_method{};
   static inline Method<void> _Clear_method{};
+  static inline std::mutex _methodCacheMutex{};
 
 #ifdef BNM_DOTNET35
   /**
@@ -106,9 +108,14 @@ struct Dictionary : BNM::IL2CPP::Il2CppObject {
   */
   std::map<TKey, TValue> ToMap() const {
     std::map<TKey, TValue> ret{};
-    for (auto it = (Entry *)&entries->m_Items;
-         it != ((Entry *)&entries->m_Items + count); ++it)
-      ret.emplace(std::make_pair(it->key, it->value));
+    if (!entries)
+      return ret;
+    for (int i = 0; i < count && i < (int)entries->capacity; ++i) {
+      const auto &entry = entries->m_Items[i];
+      if (entry.hashCode < 0)
+        continue;
+      ret.emplace(std::make_pair(entry.key, entry.value));
+    }
     return ret;
   }
 
@@ -118,8 +125,14 @@ struct Dictionary : BNM::IL2CPP::Il2CppObject {
   */
   std::vector<TKey> GetKeys() const {
     std::vector<TKey> ret{};
-    for (int i = 0; i < count; ++i)
-      ret.emplace_back(entries->m_Items[i].key);
+    if (!entries)
+      return ret;
+    for (int i = 0; i < count && i < (int)entries->capacity; ++i) {
+      const auto &entry = entries->m_Items[i];
+      if (entry.hashCode < 0)
+        continue;
+      ret.emplace_back(entry.key);
+    }
     return ret;
   }
 
@@ -129,8 +142,14 @@ struct Dictionary : BNM::IL2CPP::Il2CppObject {
   */
   std::vector<TValue> GetValues() const {
     std::vector<TValue> ret{};
-    for (int i = 0; i < count; ++i)
-      ret.emplace_back(entries->m_Items[i].value);
+    if (!entries)
+      return ret;
+    for (int i = 0; i < count && i < (int)entries->capacity; ++i) {
+      const auto &entry = entries->m_Items[i];
+      if (entry.hashCode < 0)
+        continue;
+      ret.emplace_back(entry.value);
+    }
     return ret;
   }
 #endif
@@ -154,6 +173,7 @@ struct Dictionary : BNM::IL2CPP::Il2CppObject {
       @return True if value is found by key.
   */
   bool TryGet(TKey key, TValue *value) const {
+    std::lock_guard lock(_methodCacheMutex);
     if (!_TryGetValue_method.IsValid())
       _TryGetValue_method =
           Class(klass).GetMethod(BNM_OBFUSCATE("TryGetValue"), 2);
@@ -166,6 +186,7 @@ struct Dictionary : BNM::IL2CPP::Il2CppObject {
       @param value Target value
   */
   void Add(TKey key, TValue value) {
+    std::lock_guard lock(_methodCacheMutex);
     if (!_Add_method.IsValid())
       _Add_method = Class(klass).GetMethod(BNM_OBFUSCATE("Add"), 2);
     return _Add_method[(void *)this](key, value);
@@ -177,6 +198,7 @@ struct Dictionary : BNM::IL2CPP::Il2CppObject {
       @param value Target value
   */
   void Insert(TKey key, TValue value) {
+    std::lock_guard lock(_methodCacheMutex);
     if (!_set_Item_method.IsValid())
       _set_Item_method = Class(klass).GetMethod(BNM_OBFUSCATE("set_Item"), 2);
     return _set_Item_method[(void *)this](key, value);
@@ -188,6 +210,7 @@ struct Dictionary : BNM::IL2CPP::Il2CppObject {
       @return True if value was removed
   */
   bool Remove(TKey key) {
+    std::lock_guard lock(_methodCacheMutex);
     if (!_Remove_method.IsValid())
       _Remove_method = Class(klass).GetMethod(BNM_OBFUSCATE("Remove"), 1);
     return _Remove_method[(void *)this](key);
@@ -199,6 +222,7 @@ struct Dictionary : BNM::IL2CPP::Il2CppObject {
       @return True if key exists.
   */
   bool ContainsKey(TKey key) const {
+    std::lock_guard lock(_methodCacheMutex);
     if (!_ContainsKey_method.IsValid())
       _ContainsKey_method =
           Class(klass).GetMethod(BNM_OBFUSCATE("ContainsKey"), 1);
@@ -211,6 +235,7 @@ struct Dictionary : BNM::IL2CPP::Il2CppObject {
       @return True if value exists.
   */
   bool ContainsValue(TValue value) const {
+    std::lock_guard lock(_methodCacheMutex);
     if (!_ContainsValue_method.IsValid())
       _ContainsValue_method =
           Class(klass).GetMethod(BNM_OBFUSCATE("ContainsValue"), 1);
@@ -221,6 +246,7 @@ struct Dictionary : BNM::IL2CPP::Il2CppObject {
       @brief Clear dictionary.
   */
   void Clear() {
+    std::lock_guard lock(_methodCacheMutex);
     if (!_Clear_method.IsValid())
       _Clear_method = Class(klass).GetMethod(BNM_OBFUSCATE("Clear"), 0);
     return _Clear_method[(void *)this]();

@@ -59,7 +59,7 @@ struct Vector2 {
   inline static Vector2 RotateTowards(Vector2 current, Vector2 target,
                                       float maxRadiansDelta,
                                       float maxMagnitudeDelta);
-  inline void Scale(Vector2 scale) { scale *scale; }
+  inline void Scale(Vector2 scale) { *this = *this * scale; }
   inline static Vector2 Scale(Vector2 a, Vector2 b) { return a * b; }
   inline static Vector2 Slerp(Vector2, Vector2, float);
   inline static Vector2 SlerpUnclamped(Vector2, Vector2, float);
@@ -161,7 +161,10 @@ struct Vector2 {
 };
 
 float Vector2::Angle(Vector2 a, Vector2 b) {
-  float v = Dot(a, b) / (Magnitude(a) * Magnitude(b));
+  float denominator = Magnitude(a) * Magnitude(b);
+  if (denominator < 0.000001f)
+    return 0.f;
+  float v = Dot(a, b) / denominator;
   v = fmaxf(v, -1.f);
   v = fminf(v, 1.f);
   return acos(v);
@@ -216,8 +219,10 @@ void Vector2::OrthoNormalize(Vector2 &normal, Vector2 &tangent) {
 }
 
 Vector2 Vector2::Project(Vector2 a, Vector2 b) {
-  float m = Magnitude(b);
-  return Dot(a, b) / (m * m) * b;
+  float sqrMag = Dot(b, b);
+  if (sqrMag < 0.000001f)
+    return Vector2::zero;
+  return Dot(a, b) / sqrMag * b;
 }
 
 Vector2 Vector2::Reflect(Vector2 inDirection, Vector2 inNormal) {
@@ -285,7 +290,7 @@ Vector2 Vector2::SmoothDamp(Vector2 current, Vector2 target,
   float maxChangeSq = maxChange * maxChange;
   float sqrMag = SqrMagnitude(change);
   if (sqrMag > maxChangeSq)
-    change /= sqrtf(sqrMag) * maxChange;
+    change = change / sqrtf(sqrMag) * maxChange;
   target = current - change;
   Vector2 temp = (currentVelocity + omega * change) * deltaTime;
   currentVelocity = (currentVelocity - omega * temp) * exp;

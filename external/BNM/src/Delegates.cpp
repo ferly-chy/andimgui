@@ -25,8 +25,12 @@ std::vector<BNM::MethodBase> BNM::MulticastDelegateBase::GetMethods() const {
 
   std::vector<MethodBase> ret{};
   ret.reserve(delegates->capacity);
-  for (IL2CPP::il2cpp_array_size_t i = 0; i < delegates->capacity; ++i)
-    ret.push_back(delegates->At(i)->GetMethod());
+  for (IL2CPP::il2cpp_array_size_t i = 0; i < delegates->capacity; ++i) {
+    auto delegate = *delegates->At(i);
+    if (!delegate)
+      continue;
+    ret.push_back(delegate->GetMethod());
+  }
   return ret;
 }
 

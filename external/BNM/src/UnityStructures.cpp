@@ -15,12 +15,16 @@ void *RaycastHit::GetCollider() const {
   if (!FromId)
     FromId = (decltype(FromId))GetExternMethod(
         BNM_OBFUSCATE("UnityEngine.Object::FindObjectFromInstanceID_Injected"));
+  if (!FromId)
+    return nullptr;
   return (void *)BNM::UnmarshalUnityObject((BNM_INT_PTR)FromId(m_Collider));
 #else
   static void *(*FromId)(int){};
   if (!FromId)
     FromId = (decltype(FromId))GetExternMethod(
         BNM_OBFUSCATE("UnityEngine.Object::FindObjectFromInstanceID"));
+  if (!FromId)
+    return nullptr;
   return FromId(m_Collider);
 #endif
 #else
@@ -37,12 +41,16 @@ void *RaycastHit2D::GetCollider() const {
   if (!FromId)
     FromId = (decltype(FromId))GetExternMethod(
         BNM_OBFUSCATE("UnityEngine.Object::FindObjectFromInstanceID_Injected"));
+  if (!FromId)
+    return nullptr;
   return (void *)BNM::UnmarshalUnityObject((BNM_INT_PTR)FromId(m_Collider));
 #else
   static void *(*FromId)(int){};
   if (!FromId)
     FromId = (decltype(FromId))GetExternMethod(
         BNM_OBFUSCATE("UnityEngine.Object::FindObjectFromInstanceID"));
+  if (!FromId)
+    return nullptr;
   return FromId(m_Collider);
 #endif
 #else

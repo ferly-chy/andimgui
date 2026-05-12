@@ -31,6 +31,7 @@ struct Color {
   };
 
   inline static Color HSVToRGB(float H, float S, float V, bool hdr = true) {
+    H = H - floorf(H);
     if (S == 0)
       return {V, V, V};
     else if (V == 0)

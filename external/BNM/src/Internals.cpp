@@ -22,6 +22,7 @@ BNM::ForwardList<void (*)()> onIl2CppLoaded{};
 std::string_view constructorName = BNM_OBFUSCATE(".ctor");
 BNM::Class customListTemplateClass{};
 std::map<uint32_t, BNM::Class> customListsMap{};
+std::shared_mutex customListsMapMutex{};
 int32_t finalizerSlot = -1;
 
 ImageCacheMap imageCache{};
@@ -67,11 +68,10 @@ IL2CPP::Il2CppClass *(*old_Class$$FromName)(IL2CPP::Il2CppImage *image,
 #if UNITY_VER <= 174
 IL2CPP::Il2CppImage *(*old_GetImageFromIndex)(IL2CPP::ImageIndex index){};
 #endif
-BNMClassesMap bnmClassesMap{};
-
 // Track allocations made with BNM_malloc during runtime class creation
 std::vector<void *> allocatedMemory{};
 std::mutex memoryTrackerMutex{};
+BNMClassesMap bnmClassesMap{};
 void TrackAllocation(void *ptr) {
   if (!ptr)
     return;

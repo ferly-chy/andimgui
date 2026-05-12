@@ -122,10 +122,7 @@ struct Quaternion {
             lhs.w * rhs.w - lhs.x * rhs.x - lhs.y * rhs.y - lhs.z * rhs.z};
   }
   inline friend Quaternion operator/(Quaternion lhs, Quaternion rhs) {
-    return {lhs.w / rhs.x + lhs.x / rhs.w + lhs.y / rhs.z - lhs.z / rhs.y,
-            lhs.w / rhs.y + lhs.y / rhs.w + lhs.z / rhs.x - lhs.x / rhs.z,
-            lhs.w / rhs.z + lhs.z / rhs.w + lhs.x / rhs.y - lhs.y / rhs.x,
-            lhs.w / rhs.w - lhs.x / rhs.x - lhs.y / rhs.y - lhs.z / rhs.z};
+    return lhs * Inverse(rhs);
   }
   inline static Vector3 RotateVectorByQuaternion(Quaternion lhs, Vector3 rhs);
 
@@ -145,14 +142,7 @@ inline Quaternion &Quaternion::operator*=(Quaternion rhs) {
 }
 
 inline Quaternion &Quaternion::operator/=(Quaternion rhs) {
-  float tempX = w / rhs.x + x / rhs.w + y / rhs.z - z / rhs.y;
-  float tempY = w / rhs.y + y / rhs.w + z / rhs.x - x / rhs.z;
-  float tempZ = w / rhs.z + z / rhs.w + x / rhs.y - y / rhs.x;
-  float tempW = w / rhs.w - x / rhs.x - y / rhs.y - z / rhs.z;
-  x = tempX;
-  y = tempY;
-  z = tempZ;
-  w = tempW;
+  *this = *this * Inverse(rhs);
   return *this;
 }
 
@@ -186,6 +176,8 @@ float Quaternion::Dot(Quaternion lhs, Quaternion rhs) {
 Quaternion Quaternion::FromAngleAxis(float angle, Vector3 axis) {
   Quaternion q;
   float m = sqrtf(axis.x * axis.x + axis.y * axis.y + axis.z * axis.z);
+  if (m <= 0.000001f)
+    return identity;
   float s = sinf(angle / 2) / m;
   q.x = axis.x * s;
   q.y = axis.y * s;
@@ -263,6 +255,8 @@ Quaternion Quaternion::FromToRotation(Vector3 fromVector, Vector3 toVector) {
   float dot = Vector3::Dot(fromVector, toVector);
   float k = sqrtf(Vector3::SqrMagnitude(fromVector) *
                   Vector3::SqrMagnitude(toVector));
+  if (k <= 0.000001f)
+    return identity;
   if (fabsf(dot / k + 1) < 0.00001) {
     Vector3 ortho = Vector3::Orthogonal(fromVector);
     return {Vector3::Normalize(ortho), 0};
@@ -273,6 +267,8 @@ Quaternion Quaternion::FromToRotation(Vector3 fromVector, Vector3 toVector) {
 
 Quaternion Quaternion::Inverse(Quaternion rotation) {
   float n = Norm(rotation);
+  if (n <= 0.000001f)
+    return identity;
   return Conjugate(rotation) / (n * n);
 }
 
@@ -344,7 +340,10 @@ float Quaternion::Norm(Quaternion rotation) {
 }
 
 Quaternion Quaternion::Normalize(Quaternion rotation) {
-  return rotation / Norm(rotation);
+  float n = Norm(rotation);
+  if (n <= 0.000001f)
+    return identity;
+  return rotation / n;
 }
 
 Quaternion Quaternion::RotateTowards(Quaternion from, Quaternion to,
@@ -381,7 +380,7 @@ Quaternion Quaternion::SlerpUnclamped(Quaternion a, Quaternion b, float t) {
 }
 
 void Quaternion::ToAngleAxis(Quaternion rotation, float &angle, Vector3 &axis) {
-  if (rotation.w > 1)
+  if (fabsf(rotation.w) > 1)
     rotation = Normalize(rotation);
   angle = 2 * acosf(rotation.w);
   float s = sqrt(1 - rotation.w * rotation.w);

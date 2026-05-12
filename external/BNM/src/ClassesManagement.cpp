@@ -57,6 +57,15 @@ struct MetadataTracker {
   }
 };
 thread_local MetadataTracker *currentTracker = nullptr;
+
+struct MetadataTrackerGuard {
+  MetadataTracker *previousTracker{};
+  explicit MetadataTrackerGuard(MetadataTracker &tracker)
+      : previousTracker(currentTracker) {
+    currentTracker = &tracker;
+  }
+  ~MetadataTrackerGuard() { currentTracker = previousTracker; }
+};
 } // namespace BNM::Internal::ClassesManagement
 
 static inline void *BNM_malloc_tracked(size_t size) {
@@ -143,7 +152,7 @@ void BNM::Internal::ClassesManagement::ProcessCustomClasses() {
 void ClassesManagement::ProcessClassRuntime(
     MANAGEMENT_STRUCTURES::CustomClass *customClass) {
   BNM::Internal::ClassesManagement::MetadataTracker tracker;
-  BNM::Internal::ClassesManagement::currentTracker = &tracker;
+  BNM::Internal::ClassesManagement::MetadataTrackerGuard trackerGuard(tracker);
 
   auto &type = customClass->_targetType;
   if (!type._stack.IsEmpty())
@@ -161,7 +170,6 @@ void ClassesManagement::ProcessClassRuntime(
   }
 
   tracker.Commit();
-  BNM::Internal::ClassesManagement::currentTracker = nullptr;
 
   type.Free();
   customClass->_interfaces.clear();
@@ -1117,20 +1125,23 @@ static void SetupField(IL2CPP::FieldInfo *newField,
 
 static void SetupClassOwner(IL2CPP::Il2CppClass *target,
                             IL2CPP::Il2CppClass *owner) {
-  if (!owner)
+  if (!target || !owner)
     return;
 
   auto oldOwner = target->declaringType;
   auto oldInnerList = owner->nestedTypes;
 
-  target->declaringType = owner;
-
   // Add a class to the new owner's list.
   auto newInnerList = (IL2CPP::Il2CppClass **)BNM_MALLOC_TRACKED(
       sizeof(IL2CPP::Il2CppClass *) * (owner->nested_type_count + 1));
+  if (!newInnerList) {
+    BNM_LOG_ERR("BNM::ClassesManagement: failed to allocate nested type list");
+    return;
+  }
   if (oldInnerList && owner->nested_type_count)
     memcpy(newInnerList, oldInnerList,
            sizeof(IL2CPP::Il2CppClass *) * owner->nested_type_count);
+  target->declaringType = owner;
   newInnerList[owner->nested_type_count++] = target;
   owner->nestedTypes = newInnerList;
 
@@ -1157,6 +1168,11 @@ static void SetupClassOwner(IL2CPP::Il2CppClass *target,
       newInnerList = newCount ? (IL2CPP::Il2CppClass **)BNM_MALLOC_TRACKED(
                                     sizeof(IL2CPP::Il2CppClass *) * newCount)
                               : nullptr;
+      if (newCount && !newInnerList) {
+        BNM_LOG_ERR(
+            "BNM::ClassesManagement: failed to allocate nested type list");
+        return;
+      }
       uint8_t skipped = 0;
       for (uint16_t i = 0; i < oldOwner->nested_type_count; ++i) {
         if (skipped == 0)

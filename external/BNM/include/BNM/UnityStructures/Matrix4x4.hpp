@@ -122,27 +122,27 @@ struct Matrix4x4 {
     return *this;
   }
   [[nodiscard]] inline Quaternion rotation() const {
-    float m00 = m_Data[0], m01 = m_Data[4], m02 = m_Data[8];
-    float m10 = m_Data[1], m11 = m_Data[5], m12 = m_Data[9];
-    float m20 = m_Data[2], m21 = m_Data[6], m22 = m_Data[10];
+    float m00 = m_Data[0], m10 = m_Data[1], m20 = m_Data[2];
+    float m01 = m_Data[4], m11 = m_Data[5], m21 = m_Data[6];
+    float m02 = m_Data[8], m12 = m_Data[9], m22 = m_Data[10];
 
-    float len0 = std::sqrt(m00 * m00 + m01 * m01 + m02 * m02);
-    float len1 = std::sqrt(m10 * m10 + m11 * m11 + m12 * m12);
-    float len2 = std::sqrt(m20 * m20 + m21 * m21 + m22 * m22);
+    float len0 = std::sqrt(m00 * m00 + m10 * m10 + m20 * m20);
+    float len1 = std::sqrt(m01 * m01 + m11 * m11 + m21 * m21);
+    float len2 = std::sqrt(m02 * m02 + m12 * m12 + m22 * m22);
 
     if (len0 > 1e-6f) {
       m00 /= len0;
-      m01 /= len0;
-      m02 /= len0;
+      m10 /= len0;
+      m20 /= len0;
     }
     if (len1 > 1e-6f) {
-      m10 /= len1;
+      m01 /= len1;
       m11 /= len1;
-      m12 /= len1;
+      m21 /= len1;
     }
     if (len2 > 1e-6f) {
-      m20 /= len2;
-      m21 /= len2;
+      m02 /= len2;
+      m12 /= len2;
       m22 /= len2;
     }
 

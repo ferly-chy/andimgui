@@ -9,6 +9,8 @@ BNM::Image::Image(const std::string_view &name) {
 }
 
 BNM::Image::Image(const BNM::IL2CPP::Il2CppAssembly *assembly) {
+  if (!assembly || !Internal::il2cppMethods.il2cpp_assembly_get_image)
+    return;
   _data = Internal::il2cppMethods.il2cpp_assembly_get_image(assembly);
 }
 

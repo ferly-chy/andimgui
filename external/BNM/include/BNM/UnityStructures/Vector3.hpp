@@ -202,7 +202,10 @@ struct Vector3 {
 };
 
 float Vector3::Angle(Vector3 from, Vector3 to) {
-  float v = Dot(from, to) / (Magnitude(from) * Magnitude(to));
+  float denominator = Magnitude(from) * Magnitude(to);
+  if (denominator < kEpsilon)
+    return 0.f;
+  float v = Dot(from, to) / denominator;
   v = fmaxf(v, -1.f);
   v = fminf(v, 1.f);
   return acosf(v);
@@ -460,7 +463,7 @@ Vector3 Vector3::SmoothDamp(Vector3 current, Vector3 target,
   float maxChangeSq = maxChange * maxChange;
   float sqrMag = SqrMagnitude(change);
   if (sqrMag > maxChangeSq)
-    change /= sqrtf(sqrMag) * maxChange;
+    change = change / sqrtf(sqrMag) * maxChange;
   target = current - change;
   Vector3 temp = (currentVelocity + omega * change) * deltaTime;
   currentVelocity = (currentVelocity - omega * temp) * exp;

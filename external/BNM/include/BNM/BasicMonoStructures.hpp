@@ -223,8 +223,10 @@ template <typename T> struct Array : BNM::IL2CPP::Il2CppObject {
   */
   bool CopyFrom(T *arr, IL2CPP::il2cpp_array_size_t size) {
     BNM_CHECK_SELF(false);
-    if (size > capacity)
+    if (size > capacity || (!arr && size != 0))
       return false;
+    if (size == 0)
+      return true;
     if constexpr (std::is_trivially_copyable_v<T>) {
       memcpy(&m_Items[0], arr, size * sizeof(T));
     } else {
@@ -251,7 +253,7 @@ template <typename T> struct Array : BNM::IL2CPP::Il2CppObject {
   */
   inline Utils::DataIterator<T> At(IL2CPP::il2cpp_array_size_t index) const {
     BNM_CHECK_SELF({});
-    if (GetCapacity() < index)
+    if (GetCapacity() <= index)
       return {};
     return &m_Items[index];
   }
@@ -279,19 +281,25 @@ template <typename T> struct Array : BNM::IL2CPP::Il2CppObject {
       @return New array
   */
   static Array<T> *Create(size_t capacity, bool _forceUseAlloc = false) {
+    if (capacity > (SIZE_MAX - sizeof(Array<T>)) / sizeof(T))
+      return nullptr;
+
     auto cls = _forceUseAlloc ? BNM::Defaults::DefaultTypeRef{}
                               : BNM::Defaults::Get<T>();
+    size_t allocationSize = sizeof(Array<T>) + sizeof(T) * capacity;
 #ifndef BNM_USE_IL2CPP_ALLOCATOR
     auto monoArr =
         (Array<T> *)(cls.IsValid()
                          ? __Internal_Array::ArrayFromClass(cls, capacity)
-                         : BNM_malloc(sizeof(Array) + sizeof(T) * capacity));
+                         : BNM_malloc(allocationSize));
 #else
     auto monoArr =
         (Array<T> *)(cls.IsValid()
                          ? __Internal_Array::ArrayFromClass(cls, capacity)
-                         : BNM::Allocate(sizeof(Array) + sizeof(T) * capacity));
+                         : BNM::Allocate(allocationSize));
 #endif
+    if (!monoArr)
+      return nullptr;
     if (cls.IsValid()) {
       if constexpr (std::is_trivially_constructible_v<T>) {
         memset(monoArr->m_Items, 0, sizeof(T) * capacity);
@@ -300,7 +308,7 @@ template <typename T> struct Array : BNM::IL2CPP::Il2CppObject {
           new (&monoArr->m_Items[i]) T();
       }
     } else {
-      memset(monoArr, 0, sizeof(Array) + sizeof(T) * capacity);
+      memset(monoArr, 0, allocationSize);
       monoArr->klass = nullptr;
     }
     monoArr->capacity = capacity;
@@ -332,7 +340,11 @@ template <typename T> struct Array : BNM::IL2CPP::Il2CppObject {
       @return New array
   */
   static Array<T> *Create(T *arr, size_t size, bool _forceUseAlloc = false) {
+    if (!arr && size != 0)
+      return nullptr;
     Array<T> *monoArr = Create(size, _forceUseAlloc);
+    if (!monoArr)
+      return nullptr;
     monoArr->CopyFrom(arr, size);
     return monoArr;
   }
@@ -416,7 +428,10 @@ template <typename T> struct List : BNM::IL2CPP::Il2CppObject {
       @brief Get list data pointer.
       @return List data pointer if list is valid, otherwise null.
   */
-  [[nodiscard]] inline T *GetData() const { return items->GetData(); }
+  [[nodiscard]] inline T *GetData() const {
+    BNM_CHECK_SELF(nullptr);
+    return items ? items->GetData() : nullptr;
+  }
 
   /**
       @brief Get list size.
@@ -532,7 +547,7 @@ template <typename T> struct List : BNM::IL2CPP::Il2CppObject {
      otherwise empty DataIterator.
   */
   [[nodiscard]] Utils::DataIterator<T> At(int index) const {
-    if (index >= size)
+    if (index < 0 || index >= size)
       return {};
     return &items->m_Items[index];
   }
@@ -610,7 +625,7 @@ template <typename T> struct List : BNM::IL2CPP::Il2CppObject {
       @return Element if index isn't out of bounds, otherwise default value.
   */
   [[nodiscard]] T get_Item(int index) const {
-    if (index >= size)
+    if (index < 0 || index >= size)
       return {};
     return items->m_Items[index];
   }
@@ -621,7 +636,7 @@ template <typename T> struct List : BNM::IL2CPP::Il2CppObject {
       @param item New element value
   */
   void set_Item(int index, T item) {
-    if (index >= size)
+    if (index < 0 || index >= size)
       return;
     items->m_Items[index] = item;
     ++version;
@@ -633,13 +648,21 @@ template <typename T> struct List : BNM::IL2CPP::Il2CppObject {
       @param item New element value
   */
   void Insert(int index, T item) {
-    if (index > size)
+    if (index < 0 || index > size || !items)
       return;
     if (size == items->capacity)
       GrowIfNeeded(1);
-    if (index < size)
-      memmove(items->m_Items + index + 1, items->m_Items + index,
-              (size - index) * sizeof(T));
+    if (!items || size >= items->capacity)
+      return;
+    if (index < size) {
+      if constexpr (std::is_trivially_copyable_v<T>) {
+        memmove(items->m_Items + index + 1, items->m_Items + index,
+                (size - index) * sizeof(T));
+      } else {
+        for (int i = size - 1; i >= index; --i)
+          items->m_Items[i + 1] = std::move(items->m_Items[i]);
+      }
+    }
     items->m_Items[index] = item;
     ++size;
     ++version;
@@ -658,7 +681,11 @@ template <typename T> struct List : BNM::IL2CPP::Il2CppObject {
       @brief Copy data from current list to some array.
   */
   void CopyTo(Array<T> *arr, int arrIndex) const {
-    memcpy(items->m_Items, arr->m_Items + arrIndex, size * sizeof(T));
+    BNM_CHECK_SELF();
+    if (!arr || !items || arrIndex < 0 || arrIndex > (int)arr->capacity ||
+        size > (int)arr->capacity - arrIndex)
+      return;
+    memcpy(arr->m_Items + arrIndex, items->m_Items, size * sizeof(T));
   }
 
   /**

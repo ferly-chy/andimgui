@@ -391,10 +391,11 @@ struct Matrix3x3 {
 #undef M
   }
   static void OrthoNormalize(Matrix3x3 &matrix) {
-    Vector3 *c0 = (Vector3 *)matrix.GetPtr() + 0;
-    Vector3 *c1 = (Vector3 *)matrix.GetPtr() + 3;
-    Vector3 *c2 = (Vector3 *)matrix.GetPtr() + 6;
-    Vector3::OrthoNormalize(*c0, *c1, *c2);
+    auto c0 = matrix.GetColumn(0);
+    auto c1 = matrix.GetColumn(1);
+    auto c2 = matrix.GetColumn(2);
+    Vector3::OrthoNormalize(c0, c1, c2);
+    matrix.SetBasis(c0, c1, c2);
   }
 
   static const Matrix3x3 zero;

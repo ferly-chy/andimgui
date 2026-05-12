@@ -16,6 +16,7 @@
 #include <BNM/Method.hpp>
 #include <BNM/UserSettings/GlobalSettings.hpp>
 #include <BNM/Utils.hpp>
+#include <atomic>
 #include <mutex>
 #include <shared_mutex>
 #include <string_view>
@@ -38,9 +39,9 @@ struct StringViewHash {
 #pragma pack(push, 1)
 
 struct States {
-  uint8_t state : 1 {};
-  uint8_t lateInitAllowed : 1 {};
-  uint8_t loading : 1 {};
+  std::atomic_bool state{};
+  std::atomic_bool lateInitAllowed{};
+  std::atomic_bool loading{};
 } extern states;
 extern void *il2cppLibraryHandle;
 extern Loading::MethodFinder currentFinderMethod;
@@ -118,6 +119,7 @@ extern BNM::ForwardList<void (*)()> onIl2CppLoaded;
 extern std::string_view constructorName;
 extern BNM::Class customListTemplateClass;
 extern std::map<uint32_t, BNM::Class> customListsMap;
+extern std::shared_mutex customListsMapMutex;
 extern int32_t finalizerSlot;
 
 // Cache for images, classes and methods
@@ -271,7 +273,10 @@ extern struct BNMClassesMap {
   template <class IterateMethod>
   inline void ForEachByImage(BNM_PTR image, IterateMethod func) {
     std::shared_lock lock(classesFindAccessMutex);
-    for (auto item : (*_map)[image])
+    auto it = _map->find(image);
+    if (it == _map->end())
+      return;
+    for (auto item : it->second)
       if (func(item))
         break;
   }

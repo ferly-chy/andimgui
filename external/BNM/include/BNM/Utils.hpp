@@ -82,7 +82,10 @@ void *GetIl2CppLibraryHandle();
     @brief Unbox any object.
     @return Unboxed object of passed type
 */
-template <typename T> inline T UnboxObject(T obj) {
+template <typename T, typename = std::enable_if_t<std::is_pointer_v<T>>>
+inline T UnboxObject(T obj) {
+  if (!obj)
+    return nullptr;
   return (T)(void *)(((char *)obj) + sizeof(BNM::IL2CPP::Il2CppObject));
 }
 

@@ -70,6 +70,10 @@ static bool CheckHandle(void *handle) {
 
   Internal::BNM_il2cpp_init_origin = ::BasicHook(
       init, Internal::BNM_il2cpp_init, Internal::old_BNM_il2cpp_init);
+  if (!Internal::BNM_il2cpp_init_origin || !Internal::old_BNM_il2cpp_init) {
+    BNM_LOG_ERR("BNM: Failed to hook il2cpp_init. Cannot proceed.");
+    return false;
+  }
 
   if (Internal::states.lateInitAllowed)
     Internal::LateInit(BNM_dlsym(
@@ -286,6 +290,10 @@ bool Loading::TryLoadByUsersFinder() {
 
   Internal::BNM_il2cpp_init_origin = ::BasicHook(
       init, Internal::BNM_il2cpp_init, Internal::old_BNM_il2cpp_init);
+  if (!Internal::BNM_il2cpp_init_origin || !Internal::old_BNM_il2cpp_init) {
+    BNM_LOG_ERR("BNM: Failed to hook il2cpp_init. Cannot proceed.");
+    return false;
+  }
 
   if (Internal::states.lateInitAllowed)
     Internal::LateInit(Internal::currentFinderMethod(
@@ -327,6 +335,9 @@ void Internal::LateInit(void *il2cpp_class_from_il2cpp_type_addr) {
   Internal::BNM_Class$$FromIl2CppType_origin =
       ::BasicHook(from_il2cpp_type, Internal::BNM_Class$$FromIl2CppType,
                   Internal::old_BNM_Class$$FromIl2CppType);
+  if (!Internal::BNM_Class$$FromIl2CppType_origin ||
+      !Internal::old_BNM_Class$$FromIl2CppType)
+    BNM_LOG_WARN("BNM: Failed to install late init Class::FromIl2CppType hook.");
 }
 
 static void EmptyMethod() {}
@@ -447,9 +458,23 @@ bool Internal::SetupBNM() {
 
   //! il2cpp::vm::Image::GetTypes
   if (il2cppMethods.il2cpp_image_get_class == nullptr) {
+    if (!il2cppMethods.il2cpp_class_from_name ||
+        !il2cppMethods.il2cpp_get_corlib) {
+      BNM_LOG_ERR("BNM: Failed to resolve Image::GetTypes fallback: missing "
+                  "il2cpp_class_from_name or il2cpp_get_corlib.");
+      return false;
+    }
+
+    auto corlib = il2cppMethods.il2cpp_get_corlib();
+    if (!corlib) {
+      BNM_LOG_ERR("BNM: Failed to resolve Image::GetTypes fallback: corlib is "
+                  "null.");
+      return false;
+    }
+
     auto assemblyClass = il2cppMethods.il2cpp_class_from_name(
-        il2cppMethods.il2cpp_get_corlib(),
-        BNM_OBFUSCATE_TMP("System.Reflection"), BNM_OBFUSCATE_TMP("Assembly"));
+        corlib, BNM_OBFUSCATE_TMP("System.Reflection"),
+        BNM_OBFUSCATE_TMP("Assembly"));
     BNM_PTR GetTypesAdr = Class(assemblyClass)
                               .GetMethod(BNM_OBFUSCATE_TMP("GetTypes"), 1)
                               .GetOffset();
@@ -499,8 +524,13 @@ bool Internal::SetupBNM() {
                 (void *)from_type_adr);
     return false;
   }
-  ::BasicHook(from_type_adr, ClassesManagement::Class$$FromIl2CppType,
-              ClassesManagement::old_Class$$FromIl2CppType);
+  auto fromTypeHook = ::BasicHook(
+      from_type_adr, ClassesManagement::Class$$FromIl2CppType,
+      ClassesManagement::old_Class$$FromIl2CppType);
+  if (!fromTypeHook || !ClassesManagement::old_Class$$FromIl2CppType) {
+    BNM_LOG_ERR("BNM: Failed to hook Class::FromIl2CppType. Cannot proceed.");
+    return false;
+  }
   BNM_LOG_DEBUG(DBG_BNM_MSG_SetupBNM_Class_FromIl2CppType,
                 OffsetInLib((void *)from_type_adr));
 
@@ -518,9 +548,14 @@ bool Internal::SetupBNM() {
                 (void *)type_get_class_adr);
     return false;
   }
-  ::BasicHook(type_get_class_adr,
-              ClassesManagement::Type$$GetClassOrElementClass,
-              ClassesManagement::old_Type$$GetClassOrElementClass);
+  auto typeGetClassHook = ::BasicHook(
+      type_get_class_adr, ClassesManagement::Type$$GetClassOrElementClass,
+      ClassesManagement::old_Type$$GetClassOrElementClass);
+  if (!typeGetClassHook || !ClassesManagement::old_Type$$GetClassOrElementClass) {
+    BNM_LOG_ERR("BNM: Failed to hook Type::GetClassOrElementClass. Cannot "
+                "proceed.");
+    return false;
+  }
   BNM_LOG_DEBUG(DBG_BNM_MSG_SetupBNM_Type_GetClassOrElementClass,
                 OffsetInLib((void *)type_get_class_adr));
 
@@ -539,8 +574,12 @@ bool Internal::SetupBNM() {
                 (void *)from_name_adr);
     return false;
   }
-  ::BasicHook(from_name_adr, ClassesManagement::Class$$FromName,
-              ClassesManagement::old_Class$$FromName);
+  auto fromNameHook = ::BasicHook(from_name_adr, ClassesManagement::Class$$FromName,
+                                  ClassesManagement::old_Class$$FromName);
+  if (!fromNameHook || !ClassesManagement::old_Class$$FromName) {
+    BNM_LOG_ERR("BNM: Failed to hook Image::ClassFromName. Cannot proceed.");
+    return false;
+  }
   BNM_LOG_DEBUG(DBG_BNM_MSG_SetupBNM_Image_FromName,
                 OffsetInLib((void *)from_name_adr));
 #if UNITY_VER <= 174
@@ -560,8 +599,14 @@ bool Internal::SetupBNM() {
                 (void *)GetImageFromIndexOffset);
     return false;
   }
-  ::BasicHook(GetImageFromIndexOffset, ClassesManagement::new_GetImageFromIndex,
-              ClassesManagement::old_GetImageFromIndex);
+  auto getImageFromIndexHook = ::BasicHook(
+      GetImageFromIndexOffset, ClassesManagement::new_GetImageFromIndex,
+      ClassesManagement::old_GetImageFromIndex);
+  if (!getImageFromIndexHook || !ClassesManagement::old_GetImageFromIndex) {
+    BNM_LOG_ERR("BNM: Failed to hook MetadataCache::GetImageFromIndex. Cannot "
+                "proceed.");
+    return false;
+  }
   BNM_LOG_DEBUG(DBG_BNM_MSG_SetupBNM_MetadataCache_GetImageFromIndex,
                 OffsetInLib((void *)GetImageFromIndexOffset));
 
@@ -580,7 +625,11 @@ bool Internal::SetupBNM() {
                 (void *)AssemblyLoadOffset);
     return false;
   }
-  ::BasicHook(AssemblyLoadOffset, ClassesManagement::Assembly$$Load, nullptr);
+  auto assemblyLoadHook =
+      ::BasicHook(AssemblyLoadOffset, ClassesManagement::Assembly$$Load, nullptr);
+  if (!assemblyLoadHook)
+    BNM_LOG_WARN("BNM: Failed to hook Assembly::Load. Continuing without load "
+                 "notification hook.");
   BNM_LOG_DEBUG(DBG_BNM_MSG_SetupBNM_Assembly_Load,
                 OffsetInLib((void *)AssemblyLoadOffset));
 
@@ -643,7 +692,8 @@ bool Internal::SetupBNM() {
   for (uint16_t slot = 0; slot < objectClass._data->vtable_count; slot++) {
     const BNM::IL2CPP::MethodInfo *vMethod =
         objectClass._data->vtable[slot].method;
-    if (strcmp(vMethod->name, BNM_OBFUSCATE_TMP("Finalize")) != 0)
+    if (!vMethod || !vMethod->name ||
+        strcmp(vMethod->name, BNM_OBFUSCATE_TMP("Finalize")) != 0)
       continue;
     finalizerSlot = slot;
     break;

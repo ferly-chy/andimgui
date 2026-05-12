@@ -73,19 +73,28 @@ void *PRIVATE_MonoListData::CompareExchange4List(void *syncRoot) {
 BNM::IL2CPP::Il2CppClass *
 BNM::Structures::Mono::PRIVATE_MonoListData::TryGetMonoListClass(
     uint32_t typeHash, std::array<PRIVATE_MonoListData::MethodData, 16> &data) {
-  auto &klass = Internal::customListsMap[typeHash];
-  if (klass)
-    return klass;
+  {
+    std::shared_lock lock(Internal::customListsMapMutex);
+    auto it = Internal::customListsMap.find(typeHash);
+    if (it != Internal::customListsMap.end() && it->second)
+      return it->second;
+  }
 
   std::map<size_t, BNM::IL2CPP::MethodInfo *> createdMethods{};
   auto templateClass = Internal::customListTemplateClass.GetClass();
+  if (!templateClass)
+    return nullptr;
   auto size = sizeof(IL2CPP::Il2CppClass) +
               templateClass->vtable_count * sizeof(IL2CPP::VirtualInvokeData);
   auto typedClass = (IL2CPP::Il2CppClass *)BNM_malloc(size);
+  if (!typedClass)
+    return nullptr;
   memcpy(typedClass, templateClass, size);
   for (uint16_t i = 4 /* Skipping virtual methods from System.Object */;
        i < typedClass->vtable_count; ++i) {
     auto &cur = typedClass->vtable[i];
+    if (!cur.method || !cur.method->name)
+      continue;
     auto name = std::string_view(cur.method->name);
     auto dot = name.rfind('.');
     if (dot != std::string_view::npos)
@@ -95,11 +104,15 @@ BNM::Structures::Mono::PRIVATE_MonoListData::TryGetMonoListClass(
     for (; iterator != data.end(); ++iterator)
       if (iterator->methodName == name)
         break;
+    if (iterator == data.end())
+      continue;
 
     auto &methodInfo = createdMethods[FNV1a(name)];
 
     if (methodInfo == nullptr) {
       methodInfo = (IL2CPP::MethodInfo *)BNM_malloc(sizeof(IL2CPP::MethodInfo));
+      if (!methodInfo)
+        continue;
       *methodInfo = *cur.method;
       methodInfo->methodPointer =
           (decltype(methodInfo->methodPointer))iterator->ptr;
@@ -107,6 +120,10 @@ BNM::Structures::Mono::PRIVATE_MonoListData::TryGetMonoListClass(
     cur.method = methodInfo;
     cur.methodPtr = methodInfo->methodPointer;
   }
-  klass = typedClass;
-  return klass;
+  std::unique_lock lock(Internal::customListsMapMutex);
+  auto [it, inserted] = Internal::customListsMap.emplace(typeHash, typedClass);
+  if (!inserted && it->second)
+    return it->second;
+  it->second = typedClass;
+  return typedClass;
 }

@@ -6,9 +6,7 @@
 namespace BNM::Structures::Unity {
 struct Vector4;
 
-inline bool IsFinite(float value) {
-  return (*(uint32_t *)&value & 0x7f800000) != 0x7f800000;
-}
+inline bool IsFinite(float value) { return std::isfinite(value); }
 
 struct Vector4 {
   union {
@@ -58,7 +56,10 @@ struct Vector4 {
     return zero;
   }
   inline static Vector4 Project(Vector4 a, Vector4 b) {
-    return b * (Dot(a, b) / Dot(b, b));
+    float sqrMag = Dot(b, b);
+    if (sqrMag < Vector3::kEpsilon)
+      return zero;
+    return b * (Dot(a, b) / sqrMag);
   }
   inline static bool CompareApproximately(Vector4 a, Vector4 b,
                                           float inMaxDist = Vector3::kEpsilon) {

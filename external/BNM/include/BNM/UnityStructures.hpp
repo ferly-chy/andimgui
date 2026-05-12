@@ -66,6 +66,8 @@ struct Object : public BNM::IL2CPP::Il2CppObject {
       @return True if objects are the same.
   */
   inline bool Same(Object *object) const {
+    if (!object)
+      return !Alive();
     return (!Alive() && !object->Alive()) ||
            (Alive() && object->Alive() && m_CachedPtr == object->m_CachedPtr);
   }
@@ -87,7 +89,8 @@ struct MonoBehaviour : public Object {
     @brief Alias for BNM::UnityEngine::Object::IsValid()
 */
 template <typename T> inline bool IsUnityObjectAlive(T o) {
-  return ((UnityEngine::Object *)o)->Alive();
+  auto obj = (UnityEngine::Object *)o;
+  return obj && obj->Alive();
 }
 
 /**
@@ -97,7 +100,7 @@ template <typename T1, typename T2>
 inline bool IsSameUnityObject(T1 o1, T2 o2) {
   auto obj1 = (UnityEngine::Object *)o1;
   auto obj2 = (UnityEngine::Object *)o2;
-  return obj1->Same(obj2);
+  return obj1 ? obj1->Same(obj2) : !obj2 || !obj2->Alive();
 }
 
 /**
@@ -264,8 +267,15 @@ template <typename... Parameters> struct UnityEvent : public UnityEventBase {
 
     for (int i = 0; i < calls->size; ++i) {
       auto persistentCall = calls->At(i);
-      if (!persistentCall->IsValid() ||
+      if (!persistentCall || !persistentCall->IsValid() ||
           persistentCall->m_CallState == UnityEventCallState::Off)
+        continue;
+      if (!persistentCall->m_Arguments &&
+          (persistentCall->m_Mode == PersistentListenerMode::Object ||
+           persistentCall->m_Mode == PersistentListenerMode::Int ||
+           persistentCall->m_Mode == PersistentListenerMode::Float ||
+           persistentCall->m_Mode == PersistentListenerMode::String ||
+           persistentCall->m_Mode == PersistentListenerMode::Bool))
         continue;
       auto argumentType = GetArgumentType(persistentCall);
       auto targetType = GetTargetType(persistentCall);

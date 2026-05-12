@@ -34,7 +34,14 @@ Internal::BNM_Class$$FromIl2CppType(IL2CPP::Il2CppReflectionType *type) {
                 BNM_OBFUSCATE_TMP(BNM_IL2CPP_API_il2cpp_thread_current));
   }
 
+  if (!Internal::il2cppMethods.il2cpp_domain_get ||
+      !Internal::il2cppMethods.il2cpp_thread_current)
+    return klass;
+
   auto domain = Internal::il2cppMethods.il2cpp_domain_get();
+  if (!domain)
+    return klass;
+
   auto thread = Internal::il2cppMethods.il2cpp_thread_current(domain);
 
   // Will be true after il2cpp_init

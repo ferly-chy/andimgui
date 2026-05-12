@@ -155,15 +155,30 @@ struct MulticastDelegate : public MulticastDelegateBase {
 
     if constexpr (std::is_same_v<Ret, void>) {
       for (IL2CPP::il2cpp_array_size_t i = 0; i < size; ++i) {
-        delegates->At(i)->GetMethod().template cast<void>().Call(parameters...);
+        auto delegate = *delegates->At(i);
+        if (!delegate)
+          continue;
+        delegate->GetMethod().template cast<void>().Call(parameters...);
       }
       return;
     } else {
+      Ret ret{};
+      bool hasResult = false;
       for (IL2CPP::il2cpp_array_size_t i = 0; i < size - 1; ++i) {
-        delegates->At(i)->GetMethod().template cast<Ret>().Call(parameters...);
+        auto delegate = *delegates->At(i);
+        if (!delegate)
+          continue;
+        delegate->GetMethod().template cast<Ret>().Call(parameters...);
       }
-      return delegates->At(size - 1)->GetMethod().template cast<Ret>().Call(
-          parameters...);
+      for (IL2CPP::il2cpp_array_size_t i = size; i > 0; --i) {
+        auto delegate = *delegates->At(i - 1);
+        if (!delegate)
+          continue;
+        ret = delegate->GetMethod().template cast<Ret>().Call(parameters...);
+        hasResult = true;
+        break;
+      }
+      return hasResult ? ret : BNM::PRIVATE_INTERNAL::ReturnEmpty<Ret>();
     }
   }
 
