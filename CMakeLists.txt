@@ -23,6 +23,8 @@ endif()
 file(GLOB_RECURSE COMMON_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/source/*.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/source/*.c
+)
+file(GLOB_RECURSE ASM_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/source/*.s
 )
 
@@ -71,9 +73,13 @@ set(LIBS
     ${CMAKE_CURRENT_SOURCE_DIR}/external/Dobby/arm64-v8a/libdobby.a
 )
 
-add_library(${PROJECT_NAME} SHARED 
+add_library(${PROJECT_NAME}_asm OBJECT ${ASM_SOURCES})
+set_target_properties(${PROJECT_NAME}_asm PROPERTIES EXPORT_COMPILE_COMMANDS OFF)
+
+add_library(${PROJECT_NAME} SHARED
     ${CMAKE_CURRENT_SOURCE_DIR}/source/Library.cpp
     ${LIBRARY_SOURCES}
+    $<TARGET_OBJECTS:${PROJECT_NAME}_asm>
 )
 
 target_compile_definitions(${PROJECT_NAME} PRIVATE
