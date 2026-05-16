@@ -15,31 +15,52 @@ static constexpr struct { std::string_view soName; int index; } kLibTable[] = {
 #undef ELF_LIB_ENTRY
 };
 
-static ElfScanner SelectByName(const std::vector<ElfScanner>& all, const std::string& name) {
-    std::vector<ElfScanner> dyn_elfs, elfs;
-    for (const auto& e : all) {
-        if (!e.isValid()) continue;
-        const std::string rp = e.realPath();
-        if (rp.size() < name.size()) continue;
-        if (rp.compare(rp.size() - name.size(), name.size(), name) != 0) continue;
-        if (e.dynamic() && e.dynamics().size() > 0) dyn_elfs.push_back(e);
-        else                                        elfs.push_back(e);
+static bool HasLibTextSeg(const ElfScanner& elf, const std::string& name)
+{
+    for (const auto& s : elf.segments()) {
+        if (!s.readable || !s.executable) continue;
+        if (s.pathname.size() >= name.size() &&
+            s.pathname.compare(s.pathname.size() - name.size(), name.size(), name) == 0)
+            return true;
     }
+    return false;
+}
 
-    auto pickMostSegs = [](const std::vector<ElfScanner>& v) -> ElfScanner {
-        if (v.empty()) return {};
-        if (v.size() == 1) return v[0];
-        ElfScanner best = v[0];
-        int bestN = (int)v[0].segments().size();
-        for (size_t i = 1; i < v.size(); ++i) {
-            int n = (int)v[i].segments().size();
-            if (n >= bestN) { best = v[i]; bestN = n; }
+static ElfScanner SelectByName(const std::string& name)
+{
+#if defined(kUSE_KITTYMEMORYEX)
+    auto& mgr = KT::detail::g_mgr;
+    ElfScanner picked = mgr.elfScanner.createWithSoInfo(mgr.linkerScanner.findSoInfo(name));
+    if (!picked.isValid()) picked = mgr.elfScanner.findElf(name);
+#else
+    ElfScanner picked = ElfScanner::createWithSoInfo(LinkerScanner::Get().findSoInfo(name));
+    if (!picked.isValid()) picked = ElfScanner::findElf(name);
+#endif
+    if (picked.isValid() && HasLibTextSeg(picked, name)) return picked;
+
+    auto maps = KT::GetAllMaps();
+    uintptr_t bestBase = 0, bestSize = 0;
+    for (const auto& m : maps) {
+        if (m.offset != 0 || !m.readable) continue;
+        if (m.pathname.size() < name.size()) continue;
+        if (m.pathname.compare(m.pathname.size() - name.size(), name.size(), name) != 0) continue;
+        const size_t sz = m.endAddress - m.startAddress;
+        if (sz > bestSize) { bestSize = sz; bestBase = m.startAddress; }
+    }
+    if (bestBase && bestBase != picked.base()) {
+#if defined(kUSE_KITTYMEMORYEX)
+        ElfScanner rebuilt(mgr.memOp(), bestBase, maps);
+#else
+        ElfScanner rebuilt(bestBase, maps);
+#endif
+        if (rebuilt.isValid() && HasLibTextSeg(rebuilt, name)) {
+            LOGI("[ElfScannerManager] %s: residual at 0x%lx; rebuilt at real base 0x%lx (sz=0x%lx)",
+                 name.c_str(), (unsigned long)picked.base(),
+                 (unsigned long)bestBase, (unsigned long)bestSize);
+            return rebuilt;
         }
-        return best;
-    };
-
-    if (!dyn_elfs.empty()) return pickMostSegs(dyn_elfs);
-    return pickMostSegs(elfs);
+    }
+    return picked;  // best-effort
 }
 
 bool ElfScannerManager::Scan(const std::set<std::string>& libraries) {
@@ -49,7 +70,6 @@ bool ElfScannerManager::Scan(const std::set<std::string>& libraries) {
     LOGI("[ElfScannerManager] Starting scan for %zu libraries...", libraries.size());
     auto start = std::chrono::high_resolution_clock::now();
 
-    // 收集需要扫描的目标
     struct ScanTask { int index; std::string name; };
     std::vector<ScanTask> tasks;
     tasks.reserve(libraries.size());
@@ -73,29 +93,12 @@ bool ElfScannerManager::Scan(const std::set<std::string>& libraries) {
         return true;
     }
 
-    // 单次拉取所有 ELF
-    std::vector<ElfScanner> allElfs;
-    for (int retry = 0; retry < 100; ++retry) {
-        allElfs = KT::GetAllELFs();
-        if (!allElfs.empty()) break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    if (allElfs.empty()) {
-        LOGE("[ElfScannerManager] GetAllELFs returned empty after 100 retries");
-        return false;
-    }
-    LOGI("[ElfScannerManager] GetAllELFs: %zu loaded ELFs", allElfs.size());
-
-    // 在快照里逐一过滤选取
     bool allSuccess = true;
     for (const auto& task : tasks) {
-        ElfScanner picked = SelectByName(allElfs, task.name);
-
-        // 个别目标可能还没 dlopen（如游戏 lazy-load），轮询等一会
+        ElfScanner picked = SelectByName(task.name);
         for (int retry = 0; !picked.isValid() && retry < 50; ++retry) {
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
-            allElfs = KT::GetAllELFs();
-            picked = SelectByName(allElfs, task.name);
+            picked = SelectByName(task.name);
         }
 
         if (!picked.isValid()) {
