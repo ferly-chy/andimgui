@@ -3,7 +3,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
-#include <format>
 #include <type_traits>
 
 struct RegContext;

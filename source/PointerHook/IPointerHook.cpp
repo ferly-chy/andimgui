@@ -1,13 +1,14 @@
 #include "IPointerHook.h"
 
-#include <sys/mman.h>
+#include <fcntl.h>
+#include <sys/prctl.h>
 #include <unistd.h>
 #include <atomic>
 #include <cerrno>
-#include <cinttypes>
-#include <cstring>
 #include <cstdio>
+#include <cstring>
 #include <mutex>
+#include <string>
 #include <vector>
 
 #include <android/log.h>
@@ -22,9 +23,9 @@
 namespace {
 
 // Per-hook trampoline layout (32 B):
-//   [+0]  bti c                ; 0xD503245F
-//   [+4]  ldr x17, [pc, #+12]  ; load IPointerHook* (literal @ +16)
-//   [+8]  ldr x16, [pc, #+16]  ; load glue addr    (literal @ +24)
+//   [+00] bti c                ; 0xD503245F
+//   [+04] ldr x17, [pc, #+12]  ; load IPointerHook* (literal @ +16)
+//   [+08] ldr x16, [pc, #+16]  ; load glue addr    (literal @ +24)
 //   [+12] br  x16              ; 0xD61F0200
 //   [+16] .quad hook_ptr
 //   [+24] .quad glue_addr
@@ -43,92 +44,122 @@ inline void EncodeTrampoline(void* rw_addr, IPointerHook* hook) {
     data[1] = reinterpret_cast<uint64_t>(&_ph_glue_entry);
 }
 
-inline uintptr_t PageAlign(uintptr_t addr) {
-    static const uintptr_t pageSize = sysconf(_SC_PAGESIZE);
-    return addr & ~(pageSize - 1);
-}
+// Unified /proc/self/mem read/write backend.
+#ifndef PH_CACHE_SELFMEM_FD
+#define PH_CACHE_SELFMEM_FD 0
+#endif
 
-// -1 means addr falls in no mapped segment (stale offset, not RELRO etc.).
-inline int GetPageProt(uintptr_t addr) {
-    FILE* fp = fopen("/proc/self/maps", "r");
-    if (!fp) return -1;
-    char line[512];
-    int prot = -1;
-    while (fgets(line, sizeof(line), fp)) {
-        uintptr_t start, end;
-        char perms[5];
-        if (sscanf(line, "%" SCNxPTR "-%" SCNxPTR " %4s", &start, &end, perms) == 3) {
-            if (addr >= start && addr < end) {
-                prot = 0;
-                if (perms[0] == 'r') prot |= PROT_READ;
-                if (perms[1] == 'w') prot |= PROT_WRITE;
-                if (perms[2] == 'x') prot |= PROT_EXEC;
-                break;
+class SelfMemFd {
+public:
+    SelfMemFd() {
+#if PH_CACHE_SELFMEM_FD
+        fd_ = AcquireCached();
+#else
+        fd_ = OpenOnce();
+#endif
+    }
+    ~SelfMemFd() {
+#if !PH_CACHE_SELFMEM_FD
+        if (fd_ >= 0) close(fd_);
+#endif
+    }
+    SelfMemFd(const SelfMemFd&) = delete;
+    SelfMemFd& operator=(const SelfMemFd&) = delete;
+    int get() const { return fd_; }
+    explicit operator bool() const { return fd_ >= 0; }
+
+private:
+    static int OpenOnce() {
+        int orig_dumpable = prctl(PR_GET_DUMPABLE);
+        bool toggled = false;
+        if (orig_dumpable != 1) {
+            if (prctl(PR_SET_DUMPABLE, 1) == 0) toggled = true;
+        }
+
+        int fd = open("/proc/self/mem", O_RDWR | O_CLOEXEC);
+        int saved_errno = errno;
+
+        if (toggled && orig_dumpable >= 0) {
+            if (prctl(PR_SET_DUMPABLE, orig_dumpable) != 0) {
+                PH_LOGE("PR_SET_DUMPABLE restore to %d failed: %s",
+                    orig_dumpable, strerror(errno));
             }
         }
-    }
-    fclose(fp);
-    return prot;
-}
 
-inline bool MemProtectRead(uintptr_t address, void* buffer, size_t len) {
-    int origProt = GetPageProt(address);
-    if (origProt < 0) {
-        PH_LOGE("MemProtectRead: %p not in /proc/self/maps (stale offset?)", (void*)address);
-        return false;
+        errno = saved_errno;
+        if (fd < 0) {
+            PH_LOGE("open(/proc/self/mem) failed: %s", strerror(errno));
+        }
+        return fd;
     }
-    if (origProt & PROT_READ) {
-        std::memcpy(buffer, reinterpret_cast<const void*>(address), len);
-        return true;
+#if PH_CACHE_SELFMEM_FD
+    static int AcquireCached() {
+        static std::atomic<int> cached_fd{-1};
+        int fd = cached_fd.load(std::memory_order_acquire);
+        if (fd >= 0) return fd;
+        fd = OpenOnce();
+        if (fd < 0) return -1;
+        int expected = -1;
+        if (!cached_fd.compare_exchange_strong(expected, fd,
+                std::memory_order_acq_rel)) {
+            close(fd);   // Lost the race; another thread cached its fd first.
+            return expected;
+        }
+        return fd;
     }
-    uintptr_t pageStart = PageAlign(address);
-    size_t totalSize = (address - pageStart) + len;
-    if (mprotect(reinterpret_cast<void*>(pageStart), totalSize, origProt | PROT_READ) != 0) {
-        PH_LOGE("MemProtectRead: mprotect(+R) failed at page %p (orig=0x%x): %s",
-             (void*)pageStart, origProt, strerror(errno));
-        return false;
+#endif
+
+    int fd_;
+};
+
+inline bool SelfMemRead(uintptr_t address, void* buffer, size_t len) {
+    SelfMemFd fd;
+    if (!fd) return false;
+    size_t total = 0;
+    while (total < len) {
+        ssize_t n = pread(fd.get(), static_cast<uint8_t*>(buffer) + total,
+                          len - total, static_cast<off_t>(address + total));
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            PH_LOGE("SelfMemRead: pread(self/mem, %p) failed: %s",
+                (void*)address, strerror(errno));
+            return false;
+        }
+        if (n == 0) {
+            PH_LOGE("SelfMemRead: pread(self/mem, %p) short read",
+                (void*)address);
+            return false;
+        }
+        total += static_cast<size_t>(n);
     }
-    std::memcpy(buffer, reinterpret_cast<const void*>(address), len);
-    mprotect(reinterpret_cast<void*>(pageStart), totalSize, origProt);
     return true;
 }
 
-inline bool MemProtectWrite(uintptr_t address, const void* data, size_t len) {
-    int origProt = GetPageProt(address);
-    if (origProt < 0) {
-        PH_LOGE("MemProtectWrite: %p not in /proc/self/maps (stale offset?)", (void*)address);
-        return false;
-    }
-    auto do_write = [&]() {
-        // Atomic store for the single-pointer-install fast path — prevents
-        // memcpy from decomposing into torn byte stores visible mid-write.
-        if (len == sizeof(uintptr_t) && (address & 7) == 0) {
-            uintptr_t v;
-            std::memcpy(&v, data, sizeof(v));
-            __atomic_store_n(reinterpret_cast<uintptr_t*>(address), v, __ATOMIC_RELEASE);
-        } else {
-            std::memcpy(reinterpret_cast<void*>(address), data, len);
+inline bool SelfMemWrite(uintptr_t address, const void* data, size_t len) {
+    SelfMemFd fd;
+    if (!fd) return false;
+    size_t total = 0;
+    while (total < len) {
+        ssize_t n = pwrite(fd.get(), static_cast<const uint8_t*>(data) + total,
+                           len - total, static_cast<off_t>(address + total));
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            PH_LOGE("SelfMemWrite: pwrite(self/mem, %p) failed: %s",
+                (void*)address, strerror(errno));
+            return false;
         }
-    };
-
-    if (origProt & PROT_WRITE) {
-        do_write();
-        return true;
+        if (n == 0) {
+            PH_LOGE("SelfMemWrite: pwrite(self/mem, %p) short write",
+                (void*)address);
+            return false;
+        }
+        total += static_cast<size_t>(n);
     }
-    uintptr_t pageStart = PageAlign(address);
-    size_t totalSize = (address - pageStart) + len;
-    if (mprotect(reinterpret_cast<void*>(pageStart), totalSize, origProt | PROT_WRITE) != 0) {
-        PH_LOGE("MemProtectWrite: mprotect(+W) failed at page %p (orig=0x%x): %s",
-             (void*)pageStart, origProt, strerror(errno));
-        return false;
-    }
-    do_write();
-    mprotect(reinterpret_cast<void*>(pageStart), totalSize, origProt);
     return true;
 }
 
 // Linker-reserved RX region in libdfmhook .text (see ph_trampoline_pool.s).
-// 2048 × 32 B slots, brk-prefilled, bumped monotonically, never recycled.
+// n × 32 B slots, brk-prefilled, bumped monotonically, never recycled.
 
 extern "C" {
     extern uint8_t __ph_trampoline_pool_start[];
@@ -158,37 +189,24 @@ public:
         }
 
         uintptr_t tramp = base + slot * kTrampolineSize;
-        WriteSlotSealed(tramp, hook);
+        if (!WriteSlotSealed(tramp, hook)) {
+            // Slot is wasted (next_slot_ already incremented) but that's
+            // cheap — n slots, never recycled by design.
+            return 0;
+        }
         return tramp;
     }
 
 private:
     InBinaryTrampolinePool() = default;
 
-    void WriteSlotSealed(uintptr_t tramp, IPointerHook* hook) {
-        // Page-wide W-window; serialise concurrent installers on the same page.
+    bool WriteSlotSealed(uintptr_t tramp, IPointerHook* hook) {
         std::lock_guard<std::mutex> guard(write_mtx_);
 
-        uintptr_t pg_lo = PageAlign(tramp);
-        size_t    pg_sz = sysconf(_SC_PAGESIZE);
+        alignas(uint32_t) uint8_t buf[kTrampolineSize];
+        EncodeTrampoline(buf, hook);
 
-        if (mprotect(reinterpret_cast<void*>(pg_lo), pg_sz,
-                     PROT_READ | PROT_WRITE) != 0) {
-            PH_LOGE("[InBinaryTrampolinePool] mprotect(+W) failed at %p: %s",
-                 reinterpret_cast<void*>(pg_lo), strerror(errno));
-            return;
-        }
-
-        EncodeTrampoline(reinterpret_cast<void*>(tramp), hook);
-        // Required for self-modifying code (ARM ARM B2.4.4).
-        __builtin___clear_cache(reinterpret_cast<char*>(tramp),
-                                reinterpret_cast<char*>(tramp + kTrampolineSize));
-
-        if (mprotect(reinterpret_cast<void*>(pg_lo), pg_sz,
-                     PROT_READ | PROT_EXEC) != 0) {
-            PH_LOGE("[InBinaryTrampolinePool] mprotect(RX) failed at %p: %s",
-                 reinterpret_cast<void*>(pg_lo), strerror(errno));
-        }
+        return SelfMemWrite(tramp, buf, kTrampolineSize);
     }
 
     std::mutex slot_mtx_;
@@ -236,13 +254,12 @@ bool CheckEncodeTrampoline() {
     }
     if (data[0] != kSentinelHook) {
         PH_LOGE("[SelfTest] EncodeTrampoline hook literal mismatch: %llx vs %llx",
-             (unsigned long long)data[0], (unsigned long long)kSentinelHook);
+             data[0], kSentinelHook);
         return false;
     }
     if (data[1] != reinterpret_cast<uint64_t>(&_ph_glue_entry)) {
         PH_LOGE("[SelfTest] EncodeTrampoline glue literal mismatch: %llx vs %llx",
-             (unsigned long long)data[1],
-             (unsigned long long)reinterpret_cast<uint64_t>(&_ph_glue_entry));
+             data[1], reinterpret_cast<uint64_t>(&_ph_glue_entry));
         return false;
     }
     return true;
@@ -274,7 +291,7 @@ public:
     bool                     fired = false;
     std::vector<std::string> errors;
 
-    std::string GetName() const override { return "[SelfTest]"; }
+    std::string GetName() const override { return "SelfTest"; }
     uintptr_t   GetElfBase() const override { return 0; }
     uintptr_t   GetSlotAddr() const override {
         return reinterpret_cast<uintptr_t>(&g_self_test_fn);
@@ -285,22 +302,26 @@ public:
         fired = true;
 
         constexpr uint64_t kPattern = 0x1111111111111111ULL;
+        char buf[128];
         for (int i = 0; i < 8; ++i) {
             uint64_t expected = kPattern * (i + 1);
             if (ctx->general.x[i] != expected) {
-                errors.push_back(std::format("x{}: got {:#018x} want {:#018x}",
-                                              i, ctx->general.x[i], expected));
+                snprintf(buf, sizeof(buf), "x%d: got %#018llx want %#018llx",
+                    i, ctx->general.x[i], expected);
+                errors.emplace_back(buf);
             }
         }
         for (int i = 0; i < 4; ++i) {
             double expected = (i + 1) * 1.5;
             if (ctx->floating.d[i] != expected) {
-                errors.push_back(std::format("d{}: got {} want {}",
-                                              i, ctx->floating.d[i], expected));
+                snprintf(buf, sizeof(buf), "d%d: got %g want %g",
+                    i, ctx->floating.d[i], expected);
+                errors.emplace_back(buf);
             }
         }
         if (ctx->_pad != 0) {
-            errors.push_back(std::format("_pad: got {:#x} want 0", ctx->_pad));
+            snprintf(buf, sizeof(buf), "_pad: got %#llx want 0", ctx->_pad);
+            errors.emplace_back(buf);
         }
 
         return GetOrigAddr();
@@ -346,8 +367,7 @@ std::atomic<bool> g_self_test_passed{false};
         : : :            \
     );
 
-// asm/C++ bridge. ph_arm64_glue.s `bl _ph_dispatcher` lands here after
-// register save; OnCall's return drives the glue's BR/RET epilogue.
+// asm/C++ bridge
 extern "C" uintptr_t _ph_dispatcher(RegContext* ctx, IPointerHook* hook) {
     return hook->OnCall(ctx);
 }
@@ -355,13 +375,16 @@ extern "C" uintptr_t _ph_dispatcher(RegContext* ctx, IPointerHook* hook) {
 std::string RegContext::ToString() const
 {
     std::string result;
+    char line[64];
     for (int i = 0; i < 29; i++) {
-        result += std::format("x{}: {:#016x}\n", i, general.x[i]);
+        snprintf(line, sizeof(line), "x%d: %#016llx\n",
+            i, general.x[i]);
+        result += line;
     }
-    result += std::format("fp: {:#016x}\n", fp);
-    result += std::format("lr: {:#016x}\n", lr);
-    result += std::format("sp: {:#016x}\n", sp);
-    result += std::format("nzcv: {:#016x}\n", nzcv);
+    snprintf(line, sizeof(line), "fp: %#016llx\n",   fp);   result += line;
+    snprintf(line, sizeof(line), "lr: %#016llx\n",   lr);   result += line;
+    snprintf(line, sizeof(line), "sp: %#016llx\n",   sp);   result += line;
+    snprintf(line, sizeof(line), "nzcv: %#016llx\n", nzcv); result += line;
     return result;
 }
 
@@ -371,8 +394,6 @@ IPointerHook::~IPointerHook()
 {
     // Residual UAF: an in-flight caller that LDR'd trampoline_ before this
     // restore will still reach OnCall on a partly-destroyed derived object.
-    // Trampolines are permanent (ROADMAP §3); the C++ object isn't. Typical
-    // workload (install-once for process lifetime) doesn't exercise this.
     Restore();
 }
 
@@ -384,7 +405,7 @@ void IPointerHook::Resolve()
         orig_ = target;
     } else {
         uintptr_t temp = 0;
-        if (MemProtectRead(slot_, &temp, sizeof(uintptr_t)) && temp != 0) {
+        if (SelfMemRead(slot_, &temp, sizeof(uintptr_t)) && temp != 0) {
             orig_ = StripPAC(temp);
         } else {
             PH_LOGE("[%s] Resolve failed: orig is null", GetName().c_str());
@@ -425,8 +446,8 @@ void IPointerHook::Install()
 {
     if (!PrepareTrampoline()) return;
 
-    if (!MemProtectWrite(slot_, &trampoline_, sizeof(uintptr_t))) {
-        PH_LOGE("[%s] Install failed: MemProtectWrite error at %p",
+    if (!SelfMemWrite(slot_, &trampoline_, sizeof(uintptr_t))) {
+        PH_LOGE("[%s] Install failed: SelfMemWrite error at %p",
              GetName().c_str(), (void*)slot_);
         return;
     }
@@ -441,8 +462,8 @@ void IPointerHook::Restore()
 {
     if (!installed_) return;
 
-    if (!MemProtectWrite(slot_, &orig_, sizeof(uintptr_t))) {
-        PH_LOGE("[%s] Restore failed: MemProtectWrite error at %p",
+    if (!SelfMemWrite(slot_, &orig_, sizeof(uintptr_t))) {
+        PH_LOGE("[%s] Restore failed: SelfMemWrite error at %p",
              GetName().c_str(), (void*)slot_);
     }
     installed_ = false;

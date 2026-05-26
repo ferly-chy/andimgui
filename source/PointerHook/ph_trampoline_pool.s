@@ -1,4 +1,4 @@
-// In-binary trampoline pool — 2048 × 32 B slots, brk-prefilled.
+// In-binary trampoline pool — n × 32 B slots, brk-prefilled.
 
     .section .ph_trampoline_pool, "ax", %progbits
     .balign 4096
